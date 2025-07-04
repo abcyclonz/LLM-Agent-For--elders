@@ -8,7 +8,7 @@ import uuid
 from typing import TypedDict, List, Annotated, Union
 import re
 
-# --- Streamlit Page Configuration - MUST BE THE FIRST STREAMLIT COMMAND ---
+# --- Streamlit Page Configuration - MUST BE THE FIRST STREAMLIT COMMAND --
 st.set_page_config(page_title="Senior Assistance Agent", layout="wide")
 
 # --- Agent Imports ---
