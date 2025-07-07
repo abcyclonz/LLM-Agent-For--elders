@@ -5,14 +5,12 @@ credentials.json
 token.json
 *.env
 
-# --- Local Data & Databases ---
-chroma_db_store_senior_agent/
-
 # --- Python Virtual Environments ---
 venv/
 *.venv/
 __pycache__/
 *.pyc
+elderly-env
 
 # --- Streamlit ---
 .streamlit/

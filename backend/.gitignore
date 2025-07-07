@@ -1,0 +1,4 @@
+# --- Local Data & Databases ---
+chroma_db_store_senior_agent/
+
+__pycache__
