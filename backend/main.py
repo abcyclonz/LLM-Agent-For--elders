@@ -1,5 +1,5 @@
 # main.py (FastAPI Application)
-from fastapi import FastAPI, HTTPException, UploadFile, File, Form, Response
+from fastapi import FastAPI, HTTPException, UploadFile, File, Form # Removed Response as it's not needed without /speak_response
 from pydantic import BaseModel
 import uvicorn
 import os
@@ -15,15 +15,10 @@ import whisper
 import numpy as np
 import torchaudio
 import torch
-import torch.serialization # For add_safe_globals (used by Coqui TTS)
+# Removed torch.serialization as it was only used for Coqui TTS safe_globals
 
 # --- Coqui TTS (XTTSv2) Imports ---
-from TTS.api import TTS
-from TTS.tts.configs.xtts_config import XttsConfig
-from TTS.tts.models.xtts import XttsAudioConfig 
-from TTS.config.shared_configs import BaseDatasetConfig
-from TTS.tts.models.xtts import XttsArgs
-
+# ALL COQUI TTS RELATED IMPORTS REMOVED
 
 # --- Agent Imports ---
 from langgraph.graph import StateGraph, END
@@ -62,8 +57,8 @@ CALENDAR_ACTION = "USE_CALENDAR_TOOL"
 # Initialize FastAPI app
 app = FastAPI(
     title="Senior Assistance Agent API",
-    description="API for the Senior Assistance Agent, providing conversational, memory, voice input (Whisper), and voice output (XTTSv2).",
-    version="1.0.6", # Updated version
+    description="API for the Senior Assistance Agent, providing conversational, memory, and voice input (Whisper). TTS functionality is disabled, and the /speak_response endpoint has been removed.",
+    version="1.0.8", # Updated version to reflect /speak_response removal
 )
 
 # --- CORS Configuration ---
@@ -71,7 +66,7 @@ origins = [
     "http://localhost",
     "http://localhost:8000",
     "http://127.0.0.1:8000",
-    "http://localhost:5500", # Example: If your frontend is served by Live Server or similar on port 5500
+    "http://localhost:5500",
     "*" # WARNING: USE THIS ONLY FOR DEVELOPMENT. For production, specify explicit origins.
 ]
 
@@ -108,11 +103,7 @@ class MemoryQueryResponse(BaseModel):
     facts: List[dict]
     summaries: List[dict]
 
-class VoiceOutputRequest(BaseModel):
-    session_id: str
-    text_to_speak: str
-    # speaker_wav_path for XTTSv2 is passed directly to the function
-    speaker_wav_path: Union[str, None] = None
+# Removed VoiceOutputRequest Pydantic model as /speak_response is removed
 
 
 # --- Agent State Definition ---
@@ -141,10 +132,8 @@ app_graph: StateGraph = None
 user_persona_data: dict = None
 whisper_model: whisper.Whisper = None
 
-# --- Coqui XTTSv2 TTS Globals ---
-xtts_model = None
-XTTS_SAMPLING_RATE = 24000 # XTTSv2's default sampling rate
-DEFAULT_XTTS_SPEAKER_WAV_PATH = "./xtts_speaker_reference.wav" # IMPORTANT: Create a 6-10s WAV file here for a default voice
+# --- Coqui XTTSv2 TTS Globals (removed) ---
+# ALL COQUI TTS RELATED GLOBALS REMOVED
 
 
 @app.on_event("startup")
@@ -152,7 +141,6 @@ async def startup_event():
     global router_llm, main_llm, summarizer_llm, fact_extractor_llm
     global embedding_model, chroma_client, facts_collection, summaries_collection
     global app_graph, user_persona_data, whisper_model
-    global xtts_model
 
     print("Initializing LLMs...")
     router_llm = ChatOllama(model=ROUTER_LLM_MODEL, temperature=0.0)
@@ -188,37 +176,8 @@ async def startup_event():
         print("Ensure 'ffmpeg' is installed and you have sufficient memory.")
         raise RuntimeError(f"Failed to load Whisper model: {e}")
 
-    print("Loading Coqui XTTSv2 TTS model...")
-    try:
-        # Add XttsConfig to PyTorch's safe globals list.
-        # This tells PyTorch it's safe to deserialize this class from the checkpoint.
-        # This resolves the 'Weights only load failed... Unsupported global: GLOBAL TTS.tts.configs.xtts_config.XttsConfig' error.
-        torch.serialization.add_safe_globals([XttsConfig, XttsAudioConfig, BaseDatasetConfig, XttsArgs]) 
-
-        xtts_model = TTS(model_name="tts_models/multilingual/multi-dataset/xtts_v2", progress_bar=True)
-
-        # Move the model to GPU if available for faster inference
-        if torch.cuda.is_available():
-            print(f"Moving XTTSv2 model to GPU: {torch.cuda.get_device_name(0)}")
-            xtts_model.to("cuda")
-        else:
-            print("Running XTTSv2 model on CPU (GPU recommended for speed).")
-            xtts_model.to("cpu")
-
-        # Check if the default speaker WAV exists for a consistent voice
-        if not os.path.exists(DEFAULT_XTTS_SPEAKER_WAV_PATH):
-            print(f"WARNING: Default speaker WAV not found at '{DEFAULT_XTTS_SPEAKER_WAV_PATH}'.")
-            print("XTTSv2 can generate speech without it, but voice cloning will use a generic voice.")
-            print("For a consistent voice, create a 6-10 second WAV file of a speaker and place it at this path.")
-        else:
-            print(f"Using default speaker WAV from: {DEFAULT_XTTS_SPEAKER_WAV_PATH}")
-
-        print("Coqui XTTSv2 model loaded successfully.")
-    except Exception as e:
-        print(f"CRITICAL Error loading Coqui XTTSv2 model: {e}")
-        print("Ensure you have 'TTS' Python package installed and PyTorch configured correctly.")
-        print("Also check 'ffmpeg' installation and your GPU drivers/VRAM.")
-        raise RuntimeError(f"Failed to load Coqui XTTSv2 model: {e}")
+    # --- TTS Model Loading Block Removed ---
+    print("TTS functionality is currently disabled and the /speak_response endpoint has been removed.")
 
 
     print("Compiling LangGraph app...")
@@ -299,46 +258,8 @@ async def transcribe_audio_with_whisper(audio_file: UploadFile) -> str:
             os.remove(temp_file_path)
             print(f"  Cleaned up temporary file: {temp_file_path}")
 
-# --- Text-to-Speech with Coqui XTTSv2 ---
-async def generate_speech_with_xtts(text: str, speaker_wav_path: Union[str, None] = None) -> bytes:
-    """
-    Generates speech audio from text using the loaded Coqui XTTSv2 model.
-    Returns audio as bytes in WAV format.
-    Optionally clones voice from speaker_wav_path.
-    """
-    global xtts_model, DEFAULT_XTTS_SPEAKER_WAV_PATH
-    if xtts_model is None:
-        raise HTTPException(status_code=500, detail="XTTSv2 model not loaded.")
-
-    try:
-        audio_buffer = io.BytesIO()
-        
-        # Determine which speaker WAV to use
-        actual_speaker_wav_path = speaker_wav_path
-        if not actual_speaker_wav_path:
-            if os.path.exists(DEFAULT_XTTS_SPEAKER_WAV_PATH):
-                actual_speaker_wav_path = DEFAULT_XTTS_SPEAKER_WAV_PATH
-            else:
-                print("  No speaker WAV provided and default not found. XTTSv2 will use a generic voice.")
-                pass 
-
-        # The tts_to_file method is synchronous, so wrap in asyncio.to_thread
-        await asyncio.to_thread(
-            xtts_model.tts_to_file,
-            text=text,
-            file_path=audio_buffer,
-            speaker_wav=actual_speaker_wav_path if actual_speaker_wav_path else None,
-            language="en", # You can make this configurable if needed
-            split_sentences=True # XTTSv2 performs better if it splits long texts
-        )
-
-        audio_buffer.seek(0)
-        print("  XTTSv2 speech generation complete.")
-        return audio_buffer.getvalue()
-
-    except Exception as e:
-        print(f"Error during Coqui XTTSv2 generation: {e}")
-        raise HTTPException(status_code=500, detail=f"Speech generation failed: {e}")
+# --- Text-to-Speech functions removed ---
+# The generate_speech_disabled function is no longer needed as the endpoint itself is gone.
 
 
 # --- Agent Nodes ---
@@ -666,7 +587,7 @@ def check_and_summarize_node(state: AgentState) -> dict:
                 except Exception as e:
                     print(f"  Error adding summary to ChromaDB: {e}")
             else:
-                print("  ChromaDB summaries_collection not available. Summary not persisted.")
+                print("  ChromaDB summaries_collection not available. Fact not persisted.")
         else:
             print("  Generated an empty or non-substantive summary.")
     else:
@@ -853,27 +774,7 @@ async def chat_voice_endpoint(
         print(f"Error invoking agent for session {session_id} after transcription: {e}")
         raise HTTPException(status_code=500, detail=f"Internal Server Error after transcription: {e}")
 
-@app.post("/speak_response")
-async def speak_response_endpoint(request: VoiceOutputRequest):
-    """
-    Generates speech from the given text using XTTSv2 and returns it as an audio file.
-    """
-    text_to_speak = request.text_to_speak
-    speaker_wav_path = request.speaker_wav_path
-
-    if not text_to_speak:
-        raise HTTPException(status_code=400, detail="No text provided for speech generation.")
-
-    try:
-        audio_bytes = await generate_speech_with_xtts(
-            text_to_speak,
-            speaker_wav_path=speaker_wav_path
-        )
-        return Response(content=audio_bytes, media_type="audio/wav")
-    except HTTPException as e:
-        raise e
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Error generating speech: {e}")
+# Removed /speak_response endpoint
 
 
 @app.post("/reset_session")
