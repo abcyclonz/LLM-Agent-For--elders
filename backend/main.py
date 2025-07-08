@@ -1,5 +1,6 @@
 # main.py (FastAPI Application)
-from fastapi import FastAPI, HTTPException, UploadFile, File, Form # Removed Response as it's not needed without /speak_response
+#maingg
+from fastapi import FastAPI, HTTPException, UploadFile, File, Form, Response
 from pydantic import BaseModel
 import uvicorn
 import os
@@ -9,16 +10,22 @@ import re
 from datetime import datetime
 import asyncio
 import io
+import json
+from fastapi.responses import JSONResponse
 
 # --- Local Whisper Import ---
 import whisper
 import numpy as np
 import torchaudio
 import torch
-# Removed torch.serialization as it was only used for Coqui TTS safe_globals
 
-# --- Coqui TTS (XTTSv2) Imports ---
-# ALL COQUI TTS RELATED IMPORTS REMOVED
+# --- Kokoro TTS Imports ---
+try:
+    from kokoro import KPipeline
+except ImportError:
+    print("CRITICAL ERROR: Kokoro TTS library (kokoro) not found. Please install it with `pip install kokoro`.")
+    KPipeline = None # Set to None to handle gracefully in startup_event
+
 
 # --- Agent Imports ---
 from langgraph.graph import StateGraph, END
@@ -57,8 +64,8 @@ CALENDAR_ACTION = "USE_CALENDAR_TOOL"
 # Initialize FastAPI app
 app = FastAPI(
     title="Senior Assistance Agent API",
-    description="API for the Senior Assistance Agent, providing conversational, memory, and voice input (Whisper). TTS functionality is disabled, and the /speak_response endpoint has been removed.",
-    version="1.0.8", # Updated version to reflect /speak_response removal
+    description="API for the Senior Assistance Agent, providing conversational, memory, voice input (Whisper), and voice output (Kokoro TTS).",
+    version="1.2.0",
 )
 
 # --- CORS Configuration ---
@@ -103,7 +110,13 @@ class MemoryQueryResponse(BaseModel):
     facts: List[dict]
     summaries: List[dict]
 
-# Removed VoiceOutputRequest Pydantic model as /speak_response is removed
+class VoiceOutputRequest(BaseModel):
+    session_id: str
+    text_to_speak: str
+    # Kokoro uses predefined voices, not necessarily speaker_wav_path for cloning via KPipeline
+    # If using specific voice cloning, that might be handled differently or in a specific API.
+    # For now, stick to predefined voices or direct voice tensor loading.
+    kokoro_voice_name: str = "af_heart" # Default voice, check Kokoro docs for options (e.g., 'af_bella', 'am_adam')
 
 
 # --- Agent State Definition ---
@@ -132,8 +145,9 @@ app_graph: StateGraph = None
 user_persona_data: dict = None
 whisper_model: whisper.Whisper = None
 
-# --- Coqui XTTSv2 TTS Globals (removed) ---
-# ALL COQUI TTS RELATED GLOBALS REMOVED
+# --- Kokoro TTS Globals ---
+kokoro_pipeline = None # The KPipeline instance
+KOKORO_LANG_CODE = 'a' # 'a' for American English, 'b' for British English
 
 
 @app.on_event("startup")
@@ -141,6 +155,7 @@ async def startup_event():
     global router_llm, main_llm, summarizer_llm, fact_extractor_llm
     global embedding_model, chroma_client, facts_collection, summaries_collection
     global app_graph, user_persona_data, whisper_model
+    global kokoro_pipeline
 
     print("Initializing LLMs...")
     router_llm = ChatOllama(model=ROUTER_LLM_MODEL, temperature=0.0)
@@ -159,9 +174,18 @@ async def startup_event():
     print(f"Initializing ChromaDB client at: {CHROMA_PERSIST_PATH}")
     try:
         chroma_client = chromadb.PersistentClient(path=CHROMA_PERSIST_PATH)
-        facts_collection = chroma_client.get_or_create_collection(name=FACTS_COLLECTION_NAME)
+        facts_collection = chroma_client.get_or_create_collection(
+            name=FACTS_COLLECTION_NAME, metadata={"hnsw:space": "cosine"}
+        )
+        if facts_collection is None:
+            raise ValueError(f"Failed to get or create ChromaDB collection: {FACTS_COLLECTION_NAME}")
         print(f"Fact collection '{FACTS_COLLECTION_NAME}' loaded/created. Initial count: {facts_collection.count()}")
-        summaries_collection = chroma_client.get_or_create_collection(name=SUMMARIES_COLLECTION_NAME)
+
+        summaries_collection = chroma_client.get_or_create_collection(
+            name=SUMMARIES_COLLECTION_NAME, metadata={"hnsw:space": "cosine"}
+        )
+        if summaries_collection is None:
+            raise ValueError(f"Failed to get or create ChromaDB collection: {SUMMARIES_COLLECTION_NAME}")
         print(f"Summaries collection '{SUMMARIES_COLLECTION_NAME}' loaded/created. Initial count: {summaries_collection.count()}")
     except Exception as e:
         print(f"CRITICAL Error initializing ChromaDB collections: {e}")
@@ -173,17 +197,27 @@ async def startup_event():
         print("Whisper model loaded successfully.")
     except Exception as e:
         print(f"CRITICAL Error loading Whisper model: {e}")
-        print("Ensure 'ffmpeg' is installed and you have sufficient memory.")
         raise RuntimeError(f"Failed to load Whisper model: {e}")
 
-    # --- TTS Model Loading Block Removed ---
-    print("TTS functionality is currently disabled and the /speak_response endpoint has been removed.")
-
+    print("Loading Kokoro TTS model...")
+    if KPipeline is None:
+        print("Kokoro TTS (KPipeline) class not found. TTS functionality will be unavailable.")
+    else:
+        try:
+            kokoro_pipeline = KPipeline(lang_code=KOKORO_LANG_CODE, device="cpu")
+            print("Kokoro TTS model loaded successfully (on CPU).")
+        except Exception as e:
+            kokoro_pipeline = None
+            print(f"CRITICAL Error loading Kokoro TTS model: {e}")
+            print("Ensure `kokoro` Python package is installed and `espeak-ng` system dependency is met.")
+            print(f"Detailed Kokoro load error: {e}")
+            raise RuntimeError(f"Failed to load Kokoro TTS model: {e}")
 
     print("Compiling LangGraph app...")
     app_graph = get_compiled_app()
     print("LangGraph app compiled.")
 
+    # This is now the single source for the default persona.
     user_persona_data = {
         "name": "Aswin",
         "age_group": "Elderly (70s)",
@@ -194,6 +228,7 @@ async def startup_event():
         "technology_use": "Uses a tablet for news and games.",
         "goals_with_agent": "discuss topics of interest, reminisce,to be a friend, get help finding information online, light-hearted conversation, feel understood and less lonely."
     }
+    print("Default user persona loaded.")
 
 # --- Helper Functions ---
 def format_messages_for_llm(messages: List[BaseMessage], max_history=10) -> str:
@@ -218,6 +253,8 @@ def format_persona_for_prompt(persona_data: Union[dict, str, None]) -> str:
         return formatted_persona
     return ""
 
+
+import asyncio
 # --- Speech-to-Text with Local Whisper ---
 async def transcribe_audio_with_whisper(audio_file: UploadFile) -> str:
     global whisper_model
@@ -258,9 +295,66 @@ async def transcribe_audio_with_whisper(audio_file: UploadFile) -> str:
             os.remove(temp_file_path)
             print(f"  Cleaned up temporary file: {temp_file_path}")
 
-# --- Text-to-Speech functions removed ---
-# The generate_speech_disabled function is no longer needed as the endpoint itself is gone.
+# --- Text-to-Speech with Kokoro TTS ---
+async def generate_speech_with_kokoro(text: str, voice_name: str) -> bytes:
+    """
+    Generates speech audio from text using the loaded Kokoro TTS KPipeline.
+    Returns audio as bytes in WAV format.
+    Uses a predefined voice name.
+    """
+    global kokoro_pipeline
+    if kokoro_pipeline is None:
+        raise HTTPException(status_code=500, detail="Kokoro TTS model not loaded or failed to initialize during startup. Please check server logs for details.")
 
+    print(f"  Generating speech for text (first 50 chars) with Kokoro voice '{voice_name}': '{text[:50]}'")
+    try:
+        # Kokoro's pipeline can return a generator for streaming or a full audio tensor.
+        # For simplicity, we'll get the full audio here.
+        # It takes `text` and `voice`. `speed` can also be an option.
+        # Check Kokoro's documentation for available voices (e.g., 'af_heart', 'am_adam', etc.).
+        
+        # The KPipeline call is synchronous, so wrap in asyncio.to_thread
+        audio_chunks_generator = await asyncio.to_thread(
+            kokoro_pipeline, # The KPipeline instance is callable
+            text=text,
+            voice=voice_name,
+            speed=1.0, # Default speed, can be made configurable
+            # split_pattern=r'\n+' # Optional: how to split text, defaults usually fine
+        )
+        
+        # The generator yields (graphemes, phonemes, audio_array). We only need audio_array.
+        # It seems to be designed for streaming, so we concatenate the chunks.
+        audio_arrays = []
+        for i, (gs, ps, audio_array) in enumerate(audio_chunks_generator):
+            # audio_array is typically a numpy array
+            audio_arrays.append(audio_array)
+
+        if not audio_arrays:
+            raise HTTPException(status_code=500, detail="Kokoro TTS generated no audio chunks.")
+
+        # Concatenate numpy arrays and convert to PyTorch tensor for torchaudio.save
+        final_audio_np = np.concatenate(audio_arrays)
+        final_audio_tensor = torch.from_numpy(final_audio_np).float().unsqueeze(0) # unsqueeze(0) for (1, samples)
+
+        # Kokoro TTS generates at 24000 Hz by default
+        KOKORO_SAMPLING_RATE = 24000 # Define or get from pipeline config if available
+
+        audio_buffer = io.BytesIO()
+        torchaudio.save(audio_buffer, final_audio_tensor, KOKORO_SAMPLING_RATE, format='wav')
+        audio_buffer.seek(0)
+        print("  Kokoro TTS speech generation complete.")
+        return audio_buffer.getvalue()
+
+    except HTTPException as e:
+        raise e
+    except Exception as e:
+        print(f"Error during Kokoro TTS generation: {e}")
+        # Add more specific error handling based on Kokoro common issues
+        if "espeak-ng" in str(e):
+            print("  Hint: Kokoro TTS relies on `espeak-ng`. Ensure it's installed as a system dependency (e.g., `sudo apt install espeak-ng`).")
+        if "voice" in str(e):
+            print("  Hint: The provided `voice_name` might be invalid. Check Kokoro documentation for available voices.")
+        raise HTTPException(status_code=500, detail=f"Speech generation failed: {e}. Check Kokoro TTS setup, voice name, and `espeak-ng` installation.")
 
 # --- Agent Nodes ---
 
@@ -435,6 +529,7 @@ def retrieve_memory_node(state: AgentState) -> dict:
                 print(f"  Retrieved {len(docs)} fact(s).")
 
         if summaries_collection and summaries_collection.count() > 0:
+            print("  >> Querying SUMMARY collection...")
             summary_results = summaries_collection.query(
                 query_embeddings=[query_embedding],
                 n_results=min(RETRIEVAL_K, summaries_collection.count()),
@@ -446,6 +541,7 @@ def retrieve_memory_node(state: AgentState) -> dict:
                 retrieved_summaries_str = "\n".join(f"- Summary: {doc} (Similarity Score: {1 - dist:.4f})" for doc, dist in zip(docs, dists))
                 retrieved_context_parts.append(f"Potentially relevant past conversation summaries:\n{retrieved_summaries_str}")
                 print(f"  Retrieved {len(docs)} summary(ies).")
+            
 
     except Exception as e:
         return {"retrieved_context": f"Error retrieving memories: {e}"}
@@ -476,33 +572,45 @@ def generate_response_node(state: AgentState) -> dict:
     retrieved_context_str = state.get("retrieved_context")
     health_alerts = state.get("health_alerts")
 
+    # --- FIX: Get user_name dynamically from the state ---
+    user_persona_data = state.get("user_persona", {})
+    user_name = user_persona_data.get("name", "the user")
+
     system_prompt_content = (
         f"You are the '{AGENT_NAME}', a kind, patient, and empathetic AI companion. "
         "Your primary role is to be a supportive and engaging conversational partner."
     )
-
-    user_persona_data = state.get("user_persona")
+    
     formatted_user_persona = format_persona_for_prompt(user_persona_data)
     if formatted_user_persona:
         system_prompt_content += f"\n\n--- User Information ---\n{formatted_user_persona}"
 
     turn_specific_task = ""
     if retrieved_context_str:
-        print("  >> Entering Focused Question-Answering Mode.")
+        print("  >> Entering Persona-Aware Question-Answering Mode.")
         qa_prompt = (
-            "You are a Question-Answering engine. Your sole task is to answer the user's question based on the provided 'Context'.\n"
-            "1. Analyze the user's question.\n"
-            "2. Find the specific answer within the 'Context'.\n"
-            "3. State the answer clearly and concisely, starting with a phrase like 'Based on my notes...' or 'I found that...'.\n"
-            "4. If the context does not contain the answer, state 'I couldn't find a specific answer to your question in my notes.'\n"
-            "5. Do not add any conversational fluff or use information outside the provided 'Context'.\n\n"
-            f"--- Context ---\n{retrieved_context_str}\n----------------"
+            f"You are the '{AGENT_NAME}', a helpful and kind AI companion. You are speaking directly to your friend, {user_name}.\n\n"
+            "**Your Task:**\n"
+            f"You need to answer {user_name}'s question. The 'Context' below is **your own memory** - it contains facts you have learned about them in the past. Read their question, find the answer in your memory, and respond to them naturally in the first person ('I').\n\n"
+            "**Rules:**\n"
+            "1.  **Speak as 'I'.** For example, if the context says 'User is a history teacher', and the user asks 'what was my job?', you should answer 'I remember you telling me you were a history teacher.'\n"
+            "2.  **Address them as 'you'.**\n"
+            "3.  **Do not say 'based on the context' or refer to 'the user' in your response.** Treat the context as your own knowledge.\n"
+            "4.  If the answer isn't in your memory, say something natural like 'I don't seem to recall that, I'm sorry.'\n\n"
+            "--- CONTEXT (YOUR MEMORY) ---\n"
+            f"{retrieved_context_str}\n"
+            "---------------------------\n\n"
+            f"--- {user_name.upper()}'S QUESTION ---\n"
+            f"{user_input}\n"
+            "------------------------\n\n"
+            f"**YOUR RESPONSE TO {user_name.upper()}:**"
         )
+        # --- FIX: The prompt_parts for QA mode should only contain the system message ---
         prompt_parts = [
-            SystemMessage(content=qa_prompt),
-            HumanMessage(content=user_input)
+            SystemMessage(content=qa_prompt)
         ]
     else:
+        # This is for all other conversational modes.
         print("  >> Entering General Conversational Mode.")
         if health_alerts:
             alerts_str = "\n- ".join(health_alerts)
@@ -514,11 +622,19 @@ def generate_response_node(state: AgentState) -> dict:
                 f"{alerts_str}"
             )
         elif tool_result:
-            turn_specific_task = (
-                "Your mission is to report the result of the tool you just used. "
-                "Convey this information clearly and conversationally to the user.\n"
-                f"Tool Result: '{tool_result}'"
-            )
+            if "error" in tool_result.lower() or "failed" in tool_result.lower():
+                turn_specific_task = (
+                    "Your mission is to apologize and explain that a technical problem occurred. "
+                    "Tell the user that you failed to complete the action due to a technical error with one of your tools (like the calendar tool). "
+                    "Do not show them the raw error message. Just say something went wrong and you can't do it right now."
+                )
+            else:
+                turn_specific_task = (
+                    "Your mission is to confirm to the user that you have completed their request. "
+                    "Speak naturally, as if you did it yourself. Do NOT mention a 'tool'.\n"
+                    "For example, instead of 'The tool succeeded', say 'Okay, I've scheduled that for you.'\n\n"
+                    f"Information to convey: '{tool_result}'"
+                )
         else:
             turn_specific_task = (
                 "Your mission is to be a good listener and conversational partner. "
@@ -526,7 +642,7 @@ def generate_response_node(state: AgentState) -> dict:
             )
 
         system_prompt_content += f"\n\n--- YOUR MISSION FOR THIS TURN ---\n{turn_specific_task}"
-
+        
         prompt_parts = [SystemMessage(content=system_prompt_content.strip())]
         prompt_parts.extend(state["messages"])
         prompt_parts.append(HumanMessage(content=user_input))
@@ -727,20 +843,13 @@ async def chat_voice_endpoint(
         print(f"Transcribed text: '{transcribed_text}'")
     except HTTPException as e:
         print(f"Transcription error: {e.detail}")
-        transcribed_text = f"Error transcribing audio: {e.detail}"
+        raise HTTPException(status_code=500, detail=f"Audio transcription failed: {e.detail}")
 
     if session_id not in session_states:
         session_states[session_id] = {
-            "messages": [],
-            "long_term_memory_session_log": [],
-            "episodic_memory_session_log": [],
-            "user_persona": user_persona_data,
-            "user_input": "",
-            "turn_count": 0,
-            "router_decision": "",
-            "retrieved_context": "",
-            "tool_result": None,
-            "health_alerts": None
+            "messages": [], "long_term_memory_session_log": [], "episodic_memory_session_log": [],
+            "user_persona": user_persona_data, "user_input": "", "turn_count": 0,
+            "router_decision": "", "retrieved_context": "", "tool_result": None, "health_alerts": None
         }
 
     current_graph_input_state = session_states[session_id].copy()
@@ -774,7 +883,29 @@ async def chat_voice_endpoint(
         print(f"Error invoking agent for session {session_id} after transcription: {e}")
         raise HTTPException(status_code=500, detail=f"Internal Server Error after transcription: {e}")
 
-# Removed /speak_response endpoint
+@app.post("/speak_response")
+async def speak_response_endpoint(request: VoiceOutputRequest):
+    """
+    Generates speech from the given text using Kokoro TTS and returns it as an audio file.
+    """
+    text_to_speak = request.text_to_speak
+    voice_name = request.kokoro_voice_name # Get requested voice name from the client
+
+    if not text_to_speak:
+        raise HTTPException(status_code=400, detail="No text provided for speech generation.")
+
+    try:
+        audio_bytes = await generate_speech_with_kokoro(
+            text_to_speak,
+            voice_name=voice_name
+        )
+        return Response(content=audio_bytes, media_type="audio/wav")
+    except HTTPException as e:
+        # Re-raise HTTPExceptions directly (e.g., from validation errors or model not loaded)
+        raise e
+    except Exception as e:
+        print(f"Error during Kokoro TTS generation from endpoint: {e}")
+        raise HTTPException(status_code=500, detail=f"Speech generation failed: {e}. Check Kokoro TTS setup and voice name.")
 
 
 @app.post("/reset_session")
@@ -804,6 +935,14 @@ async def get_memories_endpoint(session_id: str, limit: int = 10):
         formatted_summaries.append({"document": doc, "metadata": meta})
 
     return MemoryQueryResponse(facts=formatted_facts, summaries=formatted_summaries)
+
+@app.get("/get_profile/{session_id}")
+async def get_profile_endpoint(session_id: str):
+    if session_id in session_states:
+        persona = session_states[session_id].get("user_persona", user_persona_data)
+    else:
+        persona = user_persona_data
+    return JSONResponse(content={"user_persona": persona})
 
 if __name__ == "__main__":
     uvicorn.run(app, host="0.0.0.0", port=8000)

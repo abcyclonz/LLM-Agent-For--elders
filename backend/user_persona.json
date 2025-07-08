@@ -1,0 +1,15 @@
+{
+  "name": "Aswin",
+  "age_group": "Elderly (70s)",
+  "preferred_language": "English",
+  "background": "Retired history teacher, loves sharing stories from his past.",
+  "interests": [
+    "history",
+    "watching old movies",
+    "woodworking",
+    "cricket"
+  ],
+  "communication_style_preference": "respectful, enjoys a good chat, appreciates when his experiences are acknowledged.",
+  "technology_use": "Uses a tablet for news and games.",
+  "goals_with_agent": "discuss topics of interest, reminisce,to be a friend, get help finding information online, light-hearted conversation, feel understood and less lonely."
+}

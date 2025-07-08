@@ -27,25 +27,38 @@
   }
 
   .dark {
-    --background: 222.2 84% 4.9%;
-    --foreground: 210 40% 98%;
-    --card: 222.2 84% 4.9%;
+    /* Ultra-deep, rich black for background and primary surfaces */
+    --background: 240 10% 2.5%;   /* Even closer to pure black, with a subtle blue tint */
+    --foreground: 210 40% 98%;   /* Keep foreground light for good contrast */
+  
+    --card: 240 10% 2.5%;        /* Match background for seamlessness */
     --card-foreground: 210 40% 98%;
-    --popover: 222.2 84% 4.9%;
+  
+    --popover: 240 10% 2.5%;
     --popover-foreground: 210 40% 98%;
-    --primary: 217.2 91.2% 59.8%;
-    --primary-foreground: 222.2 84% 4.9%;
-    --secondary: 217.2 32.6% 17.5%;
+  
+    /* Adjust primary for a deeper, perhaps slightly desaturated, but still vibrant blue */
+    --primary: 217.2 91.2% 40%;  /* Slightly darker primary color */
+    --primary-foreground: 210 40% 98%; /* Keep primary foreground light */
+  
+    /* Secondary and muted colors should also be darker, less grey, more black-ish */
+    --secondary: 240 8% 5%;      /* Very dark secondary, almost black */
     --secondary-foreground: 210 40% 98%;
-    --muted: 217.2 32.6% 17.5%;
-    --muted-foreground: 215 20.2% 65.1%;
-    --accent: 217.2 32.6% 17.5%;
+  
+    --muted: 240 8% 5%;
+    --muted-foreground: 215 15% 45%; /* Slightly darker muted foreground for better contrast */
+  
+    --accent: 240 8% 5%;
     --accent-foreground: 210 40% 98%;
-    --destructive: 0 62.8% 30.6%;
+  
+    --destructive: 0 62.8% 25%;  /* Make destructive slightly darker too for consistency */
     --destructive-foreground: 210 40% 98%;
-    --border: 217.2 32.6% 17.5%;
-    --input: 217.2 32.6% 17.5%;
-    --ring: 224.3 76.3% 94.1%;
+  
+    /* Borders and inputs should also reflect the darker aesthetic */
+    --border: 240 8% 8%;         /* Darker border, subtly lighter than background for definition */
+    --input: 240 8% 5%;          /* Very dark input field */
+  
+    --ring: 217.2 91.2% 40%;     /* Ring can match primary or be a slightly lighter accent of the primary */
   }
 }
 

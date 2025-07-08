@@ -1,0 +1,9 @@
+{
+  "heart_rate": 90,               
+    "spo2": 98,                      
+    "bp_systolic": 130,            
+    "bp_diastolic": 75,              
+    "ecg_status": "Normal",       
+    "fall_detected": false,         
+    "sleep_score": 90
+}

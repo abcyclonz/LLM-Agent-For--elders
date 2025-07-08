@@ -1,1 +1,1 @@
-self.__NEXT_FONT_MANIFEST="{\"pages\":{},\"app\":{\"/home/aaazziimm/Music/LLM-Agent-For--elders-main/frontend/app/layout\":[\"static/media/e4af272ccee01ff0-s.p.woff2\"]},\"appUsingSizeAdjust\":true,\"pagesUsingSizeAdjust\":false}"
+self.__NEXT_FONT_MANIFEST="{\"pages\":{},\"app\":{\"/home/abhi/agent/LLM-Agent-For--elders/frontend/app/layout\":[\"static/media/e4af272ccee01ff0-s.p.woff2\"]},\"appUsingSizeAdjust\":true,\"pagesUsingSizeAdjust\":false}"
