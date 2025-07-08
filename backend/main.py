@@ -1,5 +1,5 @@
 # main.py (FastAPI Application)
-from fastapi import FastAPI, HTTPException, UploadFile, File, Form # Removed Response as it's not needed without /speak_response
+from fastapi import FastAPI, HTTPException, UploadFile, File, Form, Response
 from pydantic import BaseModel
 import uvicorn
 import os
@@ -9,16 +9,21 @@ import re
 from datetime import datetime
 import asyncio
 import io
+from fastapi.responses import JSONResponse
 
 # --- Local Whisper Import ---
 import whisper
 import numpy as np
 import torchaudio
 import torch
-# Removed torch.serialization as it was only used for Coqui TTS safe_globals
 
-# --- Coqui TTS (XTTSv2) Imports ---
-# ALL COQUI TTS RELATED IMPORTS REMOVED
+# --- Kokoro TTS Imports ---
+try:
+    from kokoro import KPipeline
+except ImportError:
+    print("CRITICAL ERROR: Kokoro TTS library (kokoro) not found. Please install it with `pip install kokoro`.")
+    KPipeline = None # Set to None to handle gracefully in startup_event
+
 
 # --- Agent Imports ---
 from langgraph.graph import StateGraph, END
@@ -57,8 +62,8 @@ CALENDAR_ACTION = "USE_CALENDAR_TOOL"
 # Initialize FastAPI app
 app = FastAPI(
     title="Senior Assistance Agent API",
-    description="API for the Senior Assistance Agent, providing conversational, memory, and voice input (Whisper). TTS functionality is disabled, and the /speak_response endpoint has been removed.",
-    version="1.0.8", # Updated version to reflect /speak_response removal
+    description="API for the Senior Assistance Agent, providing conversational, memory, voice input (Whisper), and voice output (Kokoro TTS).",
+    version="1.2.0", # Updated version
 )
 
 # --- CORS Configuration ---
@@ -103,7 +108,13 @@ class MemoryQueryResponse(BaseModel):
     facts: List[dict]
     summaries: List[dict]
 
-# Removed VoiceOutputRequest Pydantic model as /speak_response is removed
+class VoiceOutputRequest(BaseModel):
+    session_id: str
+    text_to_speak: str
+    # Kokoro uses predefined voices, not necessarily speaker_wav_path for cloning via KPipeline
+    # If using specific voice cloning, that might be handled differently or in a specific API.
+    # For now, stick to predefined voices or direct voice tensor loading.
+    kokoro_voice_name: str = "af_heart" # Default voice, check Kokoro docs for options (e.g., 'af_bella', 'am_adam')
 
 
 # --- Agent State Definition ---
@@ -132,8 +143,9 @@ app_graph: StateGraph = None
 user_persona_data: dict = None
 whisper_model: whisper.Whisper = None
 
-# --- Coqui XTTSv2 TTS Globals (removed) ---
-# ALL COQUI TTS RELATED GLOBALS REMOVED
+# --- Kokoro TTS Globals ---
+kokoro_pipeline = None # The KPipeline instance
+KOKORO_LANG_CODE = 'a' # 'a' for American English, 'b' for British English
 
 
 @app.on_event("startup")
@@ -141,6 +153,7 @@ async def startup_event():
     global router_llm, main_llm, summarizer_llm, fact_extractor_llm
     global embedding_model, chroma_client, facts_collection, summaries_collection
     global app_graph, user_persona_data, whisper_model
+    global kokoro_pipeline
 
     print("Initializing LLMs...")
     router_llm = ChatOllama(model=ROUTER_LLM_MODEL, temperature=0.0)
@@ -176,8 +189,20 @@ async def startup_event():
         print("Ensure 'ffmpeg' is installed and you have sufficient memory.")
         raise RuntimeError(f"Failed to load Whisper model: {e}")
 
-    # --- TTS Model Loading Block Removed ---
-    print("TTS functionality is currently disabled and the /speak_response endpoint has been removed.")
+    print("Loading Kokoro TTS model...")
+    if KPipeline is None:
+        print("Kokoro TTS (KPipeline) class not found. TTS functionality will be unavailable.")
+    else:
+        try:
+            # Force Kokoro TTS to use CPU
+            kokoro_pipeline = KPipeline(lang_code=KOKORO_LANG_CODE, device="cpu") # <--- ADD device="cpu" HERE
+            print("Kokoro TTS model loaded successfully (on CPU).") # Added 'on CPU' for clarity
+        except Exception as e:
+            kokoro_pipeline = None # Ensure pipeline is None if loading fails
+            print(f"CRITICAL Error loading Kokoro TTS model: {e}")
+            print("Ensure `kokoro` Python package is installed and `espeak-ng` system dependency is met.")
+            print(f"Detailed Kokoro load error: {e}")
+            raise RuntimeError(f"Failed to load Kokoro TTS model: {e}")
 
 
     print("Compiling LangGraph app...")
@@ -258,8 +283,66 @@ async def transcribe_audio_with_whisper(audio_file: UploadFile) -> str:
             os.remove(temp_file_path)
             print(f"  Cleaned up temporary file: {temp_file_path}")
 
-# --- Text-to-Speech functions removed ---
-# The generate_speech_disabled function is no longer needed as the endpoint itself is gone.
+# --- Text-to-Speech with Kokoro TTS ---
+async def generate_speech_with_kokoro(text: str, voice_name: str) -> bytes:
+    """
+    Generates speech audio from text using the loaded Kokoro TTS KPipeline.
+    Returns audio as bytes in WAV format.
+    Uses a predefined voice name.
+    """
+    global kokoro_pipeline
+    if kokoro_pipeline is None:
+        raise HTTPException(status_code=500, detail="Kokoro TTS model not loaded or failed to initialize during startup. Please check server logs for details.")
+
+    print(f"  Generating speech for text (first 50 chars) with Kokoro voice '{voice_name}': '{text[:50]}'")
+    try:
+        # Kokoro's pipeline can return a generator for streaming or a full audio tensor.
+        # For simplicity, we'll get the full audio here.
+        # It takes `text` and `voice`. `speed` can also be an option.
+        # Check Kokoro's documentation for available voices (e.g., 'af_heart', 'am_adam', etc.).
+        
+        # The KPipeline call is synchronous, so wrap in asyncio.to_thread
+        audio_chunks_generator = await asyncio.to_thread(
+            kokoro_pipeline, # The KPipeline instance is callable
+            text=text,
+            voice=voice_name,
+            speed=1.0, # Default speed, can be made configurable
+            # split_pattern=r'\n+' # Optional: how to split text, defaults usually fine
+        )
+        
+        # The generator yields (graphemes, phonemes, audio_array). We only need audio_array.
+        # It seems to be designed for streaming, so we concatenate the chunks.
+        audio_arrays = []
+        for i, (gs, ps, audio_array) in enumerate(audio_chunks_generator):
+            # audio_array is typically a numpy array
+            audio_arrays.append(audio_array)
+
+        if not audio_arrays:
+            raise HTTPException(status_code=500, detail="Kokoro TTS generated no audio chunks.")
+
+        # Concatenate numpy arrays and convert to PyTorch tensor for torchaudio.save
+        final_audio_np = np.concatenate(audio_arrays)
+        final_audio_tensor = torch.from_numpy(final_audio_np).float().unsqueeze(0) # unsqueeze(0) for (1, samples)
+
+        # Kokoro TTS generates at 24000 Hz by default
+        KOKORO_SAMPLING_RATE = 24000 # Define or get from pipeline config if available
+
+        audio_buffer = io.BytesIO()
+        torchaudio.save(audio_buffer, final_audio_tensor, KOKORO_SAMPLING_RATE, format='wav')
+        audio_buffer.seek(0)
+        print("  Kokoro TTS speech generation complete.")
+        return audio_buffer.getvalue()
+
+    except HTTPException as e:
+        raise e
+    except Exception as e:
+        print(f"Error during Kokoro TTS generation: {e}")
+        # Add more specific error handling based on Kokoro common issues
+        if "espeak-ng" in str(e):
+            print("  Hint: Kokoro TTS relies on `espeak-ng`. Ensure it's installed as a system dependency (e.g., `sudo apt install espeak-ng`).")
+        if "voice" in str(e):
+            print("  Hint: The provided `voice_name` might be invalid. Check Kokoro documentation for available voices.")
+        raise HTTPException(status_code=500, detail=f"Speech generation failed: {e}. Check Kokoro TTS setup, voice name, and `espeak-ng` installation.")
 
 
 # --- Agent Nodes ---
@@ -729,52 +812,42 @@ async def chat_voice_endpoint(
         print(f"Transcription error: {e.detail}")
         transcribed_text = f"Error transcribing audio: {e.detail}"
 
-    if session_id not in session_states:
-        session_states[session_id] = {
-            "messages": [],
-            "long_term_memory_session_log": [],
-            "episodic_memory_session_log": [],
-            "user_persona": user_persona_data,
-            "user_input": "",
-            "turn_count": 0,
-            "router_decision": "",
-            "retrieved_context": "",
-            "tool_result": None,
-            "health_alerts": None
-        }
+    # Only transcribe, don't process through agent
+    return ChatResponse(
+        session_id=session_id,
+        ai_response="",  # Empty since we're not processing
+        episodic_memory_log=[],
+        long_term_memory_log=[],
+        current_router_decision="",
+        retrieved_context_for_turn="",
+        health_alerts_for_turn=[],
+        transcribed_text=transcribed_text
+    )
 
-    current_graph_input_state = session_states[session_id].copy()
-    current_graph_input_state["user_input"] = transcribed_text
+# Re-adding /speak_response endpoint
+@app.post("/speak_response")
+async def speak_response_endpoint(request: VoiceOutputRequest):
+    """
+    Generates speech from the given text using Kokoro TTS and returns it as an audio file.
+    """
+    text_to_speak = request.text_to_speak
+    voice_name = request.kokoro_voice_name # Get requested voice name from the client
 
-    print("--- Checking Health Data (Live from FastAPI endpoint) ---")
-    live_health_alerts = check_health_data()
-    current_graph_input_state["health_alerts"] = live_health_alerts
+    if not text_to_speak:
+        raise HTTPException(status_code=400, detail="No text provided for speech generation.")
 
     try:
-        updated_graph_output_state = app_graph.invoke(current_graph_input_state)
-        session_states[session_id] = updated_graph_output_state
-
-        ai_message_content = "Sorry, I had trouble generating a response."
-        if updated_graph_output_state.get("messages"):
-            last_message_in_graph = updated_graph_output_state["messages"][-1]
-            if isinstance(last_message_in_graph, AIMessage):
-                ai_message_content = last_message_in_graph.content
-
-        return ChatResponse(
-            session_id=session_id,
-            ai_response=ai_message_content,
-            episodic_memory_log=session_states[session_id].get("episodic_memory_session_log", []),
-            long_term_memory_log=session_states[session_id].get("long_term_memory_session_log", []),
-            current_router_decision=session_states[session_id].get("router_decision", ""),
-            retrieved_context_for_turn=session_states[session_id].get("retrieved_context", ""),
-            health_alerts_for_turn=session_states[session_id].get("health_alerts") or [],
-            transcribed_text=transcribed_text
+        audio_bytes = await generate_speech_with_kokoro(
+            text_to_speak,
+            voice_name=voice_name
         )
+        return Response(content=audio_bytes, media_type="audio/wav")
+    except HTTPException as e:
+        # Re-raise HTTPExceptions directly (e.g., from validation errors or model not loaded)
+        raise e
     except Exception as e:
-        print(f"Error invoking agent for session {session_id} after transcription: {e}")
-        raise HTTPException(status_code=500, detail=f"Internal Server Error after transcription: {e}")
-
-# Removed /speak_response endpoint
+        print(f"Error during Kokoro TTS generation from endpoint: {e}")
+        raise HTTPException(status_code=500, detail=f"Speech generation failed: {e}. Check Kokoro TTS setup and voice name.")
 
 
 @app.post("/reset_session")
@@ -804,6 +877,14 @@ async def get_memories_endpoint(session_id: str, limit: int = 10):
         formatted_summaries.append({"document": doc, "metadata": meta})
 
     return MemoryQueryResponse(facts=formatted_facts, summaries=formatted_summaries)
+
+@app.get("/get_profile/{session_id}")
+async def get_profile_endpoint(session_id: str):
+    if session_id in session_states:
+        persona = session_states[session_id].get("user_persona", user_persona_data)
+    else:
+        persona = user_persona_data
+    return JSONResponse(content={"user_persona": persona})
 
 if __name__ == "__main__":
     uvicorn.run(app, host="0.0.0.0", port=8000)
