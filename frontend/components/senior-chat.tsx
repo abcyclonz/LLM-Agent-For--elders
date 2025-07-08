@@ -1073,15 +1073,7 @@ export function SeniorChat() {
           </div>
 
           <div className="flex items-center gap-2 animate-smooth-fade-in">
-            {agentState.routerDecision && (
-              <Badge
-                variant="secondary"
-                className="flex items-center gap-1 bg-muted/30 text-muted-foreground transition-smooth animate-smooth-scale"
-              >
-                {getActionIcon(agentState.routerDecision)}
-                {getActionLabel(agentState.routerDecision)}
-              </Badge>
-            )}
+            {/* Removed agent action badge (heart/chat/calendar/memory) as per user request */}
 
             {/* Sub-tab buttons */}
             <div className="flex items-center gap-1">
