@@ -23,15 +23,20 @@ import {
   Volume2,
   VolumeX,
   X,
+  Play,
+  Pause,
 } from "lucide-react"
 import { useTheme } from "next-themes"
 import { ThemeToggle } from "./theme-toggle"
 import Image from "next/image"
+// WaveSurfer is only used for displaying the *static* waveform of a message, not live
+// import WaveSurfer from "wavesurfer.js" // Not used in this revised version, but kept if needed for other purposes
 
 interface Message {
   id: string
   role: 'user' | 'assistant'
   content: string
+  audioBlob?: Blob
 }
 
 export function SeniorChat() {
@@ -83,6 +88,17 @@ export function SeniorChat() {
   const recordingTimerRef = useRef<NodeJS.Timeout | null>(null)
   const pulseTimerRef = useRef<NodeJS.Timeout | null>(null)
   const audioContextRef = useRef<AudioContext | null>(null)
+  const [recordingAudioBlob, setRecordingAudioBlob] = useState<Blob | null>(null)
+  const [showTextForMessages, setShowTextForMessages] = useState<Set<string>>(new Set())
+
+  // --- Add state for profile and memory data ---
+  const [profileData, setProfileData] = useState<any | null>(null)
+  const [profileLoading, setProfileLoading] = useState(false)
+  const [profileError, setProfileError] = useState<string | null>(null)
+  const [facts, setFacts] = useState<any[]>([])
+  const [summaries, setSummaries] = useState<any[]>([])
+  const [memoryLoading, setMemoryLoading] = useState(false)
+  const [memoryError, setMemoryError] = useState<string | null>(null)
 
   // Audio feedback functions - Apple-like arpeggiated chimes, slightly lower pitch
   const playStartSound = () => {
@@ -114,7 +130,7 @@ export function SeniorChat() {
       gain2.gain.linearRampToValueAtTime(0.3, now + 0.15)
       gain2.gain.exponentialRampToValueAtTime(0.01, now + 0.23)
       osc2.start(now + 0.08); osc2.stop(now + 0.23);
-    } catch (error) { console.log("Audio feedback not supported") }
+    } catch (error) { /* Audio feedback not supported */ }
   }
 
   const playStopSound = () => {
@@ -146,7 +162,7 @@ export function SeniorChat() {
       gain2.gain.linearRampToValueAtTime(0.3, now + 0.15)
       gain2.gain.exponentialRampToValueAtTime(0.01, now + 0.23)
       osc2.start(now + 0.08); osc2.stop(now + 0.23);
-    } catch (error) { console.log("Audio feedback not supported") }
+    } catch (error) { /* Audio feedback not supported */ }
   }
 
   const playSendSound = () => {
@@ -178,7 +194,7 @@ export function SeniorChat() {
       gain2.gain.linearRampToValueAtTime(0.3, now + 0.15)
       gain2.gain.exponentialRampToValueAtTime(0.01, now + 0.23)
       osc2.start(now + 0.08); osc2.stop(now + 0.23);
-    } catch (error) { console.log("Audio feedback not supported") }
+    } catch (error) { /* Audio feedback not supported */ }
   }
 
   const playTranscriptionSound = () => {
@@ -220,7 +236,7 @@ export function SeniorChat() {
       gain3.gain.linearRampToValueAtTime(0.2, now + 0.22)
       gain3.gain.exponentialRampToValueAtTime(0.01, now + 0.28)
       osc3.start(now + 0.16); osc3.stop(now + 0.28);
-    } catch (error) { console.log("Audio feedback not supported") }
+    } catch (error) { /* Audio feedback not supported */ }
   }
 
   // Custom chat handler
@@ -241,7 +257,7 @@ export function SeniorChat() {
         content: input.trim()
       }
       // Update the existing preview message
-      setMessages(prev => prev.map(msg => 
+      setMessages(prev => prev.map(msg =>
         msg.id === previewMessageId ? userMessage : msg
       ))
       setPreviewMessageId(null) // Clear preview message ID
@@ -282,11 +298,29 @@ export function SeniorChat() {
       }
 
       // Add assistant message to chat
+      let audioBlob: Blob | undefined = undefined;
+      try {
+        const ttsResponse = await fetch('http://localhost:8000/speak_response', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            session_id: agentState.sessionId,
+            text_to_speak: data.message.content,
+          }),
+        });
+        if (ttsResponse.ok) {
+          audioBlob = await ttsResponse.blob();
+        }
+      } catch (e) {
+        // Optionally handle TTS fetch error
+        console.error("TTS fetch error:", e);
+      }
       const assistantMessage: Message = {
         id: `assistant-${Date.now()}`,
         role: 'assistant',
-        content: data.message.content
-      }
+        content: data.message.content,
+        audioBlob,
+      };
       setMessages(prev => [...prev, assistantMessage])
 
       // Update agent state
@@ -324,7 +358,7 @@ export function SeniorChat() {
       if (window.speechSynthesis) {
         synthRef.current = window.speechSynthesis
       }
-      
+
       // Check for microphone access support
       if (navigator.mediaDevices) {
         setSpeechSupported(true)
@@ -358,15 +392,18 @@ export function SeniorChat() {
       mediaRecorderRef.current.ondataavailable = (event) => {
         if (event.data.size > 0) {
           audioChunksRef.current.push(event.data)
+          // For live waveform: update the blob with the latest chunk
+          setRecordingAudioBlob(new Blob(audioChunksRef.current, { type: 'audio/wav' }))
         }
       }
 
       mediaRecorderRef.current.onstop = async () => {
         const audioBlob = new Blob(audioChunksRef.current, { type: 'audio/wav' })
+        setRecordingAudioBlob(audioBlob)
         await sendAudioToBackend(audioBlob)
-        
         // Stop all tracks to release microphone
         stream.getTracks().forEach(track => track.stop())
+        setRecordingAudioBlob(null)
       }
 
       mediaRecorderRef.current.start()
@@ -397,7 +434,7 @@ export function SeniorChat() {
       setIsRecording(false)
       setShowRecordingPulse(false)
       playStopSound()
-      
+
       // Clear timers
       if (recordingTimerRef.current) {
         clearInterval(recordingTimerRef.current)
@@ -412,7 +449,7 @@ export function SeniorChat() {
 
   const sendAudioToBackend = async (audioBlob: Blob) => {
     setIsProcessingAudio(true)
-    
+
     try {
       const formData = new FormData()
       formData.append('session_id', agentState?.sessionId || 'frontend-session')
@@ -437,22 +474,16 @@ export function SeniorChat() {
       // Show transcribed text and play notification sound
       if (data.transcribed_text) {
         playTranscriptionSound()
-        
-        // Add preview message to show transcription
-        const previewId = `preview-${Date.now()}`
-        const previewMessage: Message = {
+        // Populate input field
+        const previewId = `user-preview-${Date.now()}`;
+        setPreviewMessageId(previewId);
+        setInput(data.transcribed_text);
+        setShowTranscriptionReady(true);
+        setMessages(prev => [...prev, {
           id: previewId,
           role: 'user',
           content: data.transcribed_text
-        }
-        setMessages(prev => [...prev, previewMessage])
-        setPreviewMessageId(previewId)
-        
-        // Populate input field
-        setInput(data.transcribed_text)
-        setShowTranscriptionReady(true)
-        
-        // Hide the ready indicator after 5 seconds
+        }]);
         setTimeout(() => {
           setShowTranscriptionReady(false)
         }, 5000)
@@ -585,19 +616,37 @@ export function SeniorChat() {
     }
   }
 
-  // Mock data
-  const mockFacts = [
-    "User's favorite color is blue",
-    "User lives in retirement community",
-    "User taught history for 35 years",
-    "User enjoys cricket matches on weekends",
-  ]
-
-  const mockSummaries = [
-    "Discussed favorite historical periods and teaching experiences",
-    "Talked about woodworking projects and tools",
-    "Shared memories about old cricket matches",
-  ]
+  // --- Fetch profile and memory data when subtab is opened ---
+  useEffect(() => {
+    const sessionId = agentState.sessionId || "frontend-session"
+    if (activeSubTab === "profile") {
+      setProfileLoading(true)
+      setProfileError(null)
+      fetch(`http://localhost:8000/get_profile/${sessionId}`)
+        .then(res => {
+          if (!res.ok) throw new Error(`HTTP ${res.status}`)
+          return res.json()
+        })
+        .then(data => setProfileData(data.user_persona))
+        .catch(e => setProfileError(e.message))
+        .finally(() => setProfileLoading(false))
+    }
+    if (activeSubTab === "memory") {
+      setMemoryLoading(true)
+      setMemoryError(null)
+      fetch(`http://localhost:8000/get_memories/${sessionId}`)
+        .then(res => {
+          if (!res.ok) throw new Error(`HTTP ${res.status}`)
+          return res.json()
+        })
+        .then(data => {
+          setFacts(data.facts || [])
+          setSummaries(data.summaries || [])
+        })
+        .catch(e => setMemoryError(e.message))
+        .finally(() => setMemoryLoading(false))
+    }
+  }, [activeSubTab, agentState.sessionId])
 
   const closeSubTab = () => {
     setActiveSubTab(null)
@@ -610,7 +659,7 @@ export function SeniorChat() {
           <div className="flex-1 overflow-y-auto p-3 space-y-3 animate-in fade-in-50 duration-500 scrollbar-thin scrollbar-thumb-muted-foreground/20 scrollbar-track-transparent">
             <div className="space-y-3">
               <div className="bg-muted/20 rounded-lg transition-all duration-300 hover:bg-muted/25 hover:shadow-sm">
-                <Collapsible open={expandedSections.persona} onOpenChange={() => toggleSection("persona")}>
+                <Collapsible open={expandedSections.persona} onOpenChange={() => toggleSection("persona")}> 
                   <CollapsibleTrigger asChild>
                     <div className="cursor-pointer hover:bg-muted/30 transition-all duration-200 ease-in-out p-3 rounded-lg">
                       <div className="flex items-center justify-between text-sm">
@@ -630,49 +679,28 @@ export function SeniorChat() {
                   </CollapsibleTrigger>
                   <CollapsibleContent className="transition-smooth data-[state=open]:animate-smooth-fade-in data-[state=closed]:animate-smooth-slide-down">
                     <div className="px-3 pb-3">
-                      {agentState?.userPersona && (
+                      {profileLoading ? (
+                        <div className="text-xs text-muted-foreground">Loading profile...</div>
+                      ) : profileError ? (
+                        <div className="text-xs text-red-500">Error: {profileError}</div>
+                      ) : profileData ? (
                         <div className="space-y-2 text-xs">
-                          <div
-                            className="flex items-center gap-2 animate-smooth-slide-up"
-                            style={{ animationDelay: "0ms" }}
-                          >
-                            <User className="h-3 w-3 text-muted-foreground" />
-                            <strong>Name:</strong> {agentState.userPersona.name}
-                          </div>
-                          <div
-                            className="flex items-center gap-2 animate-smooth-slide-up"
-                            style={{ animationDelay: "100ms" }}
-                          >
-                            <Activity className="h-3 w-3 text-muted-foreground" />
-                            <strong>Age Group:</strong> {agentState.userPersona.ageGroup}
-                          </div>
-                          <div
-                            className="flex items-start gap-2 animate-smooth-slide-up"
-                            style={{ animationDelay: "200ms" }}
-                          >
-                            <FileText className="h-3 w-3 text-muted-foreground mt-0.5" />
-                            <div>
-                              <strong>Background:</strong> {agentState.userPersona.background}
+                          {Object.entries(profileData).map(([key, value]) => (
+                            <div key={key} className="flex items-start gap-2 animate-smooth-slide-up">
+                              <span className="font-semibold capitalize">{key.replace(/_/g, ' ')}:</span> {Array.isArray(value) ? value.join(", ") : String(value)}
                             </div>
-                          </div>
-                          <div
-                            className="flex items-start gap-2 animate-smooth-slide-up"
-                            style={{ animationDelay: "300ms" }}
-                          >
-                            <Heart className="h-3 w-3 text-muted-foreground mt-0.5" />
-                            <div>
-                              <strong>Interests:</strong> {agentState.userPersona.interests?.join(", ")}
-                            </div>
-                          </div>
+                          ))}
                         </div>
+                      ) : (
+                        <div className="text-xs text-muted-foreground">No profile data available.</div>
                       )}
                     </div>
                   </CollapsibleContent>
                 </Collapsible>
               </div>
-
+              {/* Keep context section as before */}
               <div className="bg-muted/20 rounded-lg transition-all duration-300 hover:bg-muted/25 hover:shadow-sm">
-                <Collapsible open={expandedSections.context} onOpenChange={() => toggleSection("context")}>
+                <Collapsible open={expandedSections.context} onOpenChange={() => toggleSection("context")}> 
                   <CollapsibleTrigger asChild>
                     <div className="cursor-pointer hover:bg-muted/30 transition-all duration-200 ease-in-out p-3 rounded-lg">
                       <div className="flex items-center justify-between text-sm">
@@ -702,19 +730,18 @@ export function SeniorChat() {
             </div>
           </div>
         )
-
       case "memory":
         return (
           <div className="flex-1 overflow-y-auto p-3 space-y-3 animate-in fade-in-50 duration-500 scrollbar-thin scrollbar-thumb-muted-foreground/20 scrollbar-track-transparent">
             <div className="space-y-3">
               <div className="bg-muted/20 rounded-lg transition-all duration-300 hover:bg-muted/25 hover:shadow-sm">
-                <Collapsible open={expandedSections.facts} onOpenChange={() => toggleSection("facts")}>
+                <Collapsible open={expandedSections.facts} onOpenChange={() => toggleSection("facts")}> 
                   <CollapsibleTrigger asChild>
                     <div className="cursor-pointer hover:bg-muted/30 transition-all duration-200 ease-in-out p-3 rounded-lg">
                       <div className="flex items-center justify-between text-sm">
                         <div className="flex items-center gap-2">
                           <FileText className="h-4 w-4 text-muted-foreground transition-colors duration-200" />
-                          Facts ({mockFacts.length})
+                          Facts ({facts.length})
                         </div>
                         <div className="transition-transform duration-300 ease-in-out">
                           {expandedSections.facts ? (
@@ -728,33 +755,40 @@ export function SeniorChat() {
                   </CollapsibleTrigger>
                   <CollapsibleContent className="transition-all duration-300 ease-in-out data-[state=open]:animate-in data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=open]:fade-in-0 data-[state=closed]:slide-out-to-top-1 data-[state=open]:slide-in-from-top-1">
                     <div className="px-3 pb-3">
-                      <div className="space-y-2">
-                        {mockFacts.map((fact, index) => (
-                          <div
-                            key={index}
-                            className="p-2 bg-muted/30 rounded text-xs flex items-start gap-2 transition-all duration-300 hover:bg-muted/40 hover:shadow-sm animate-in fade-in-50 slide-in-from-left-2"
-                            style={{ animationDelay: `${index * 100}ms` }}
-                          >
-                            <FileText className="h-3 w-3 text-muted-foreground mt-0.5 flex-shrink-0" />
-                            <div>
-                              <strong>Fact {index + 1}:</strong> {fact}
+                      {memoryLoading ? (
+                        <div className="text-xs text-muted-foreground">Loading facts...</div>
+                      ) : memoryError ? (
+                        <div className="text-xs text-red-500">Error: {memoryError}</div>
+                      ) : facts.length > 0 ? (
+                        <div className="space-y-2">
+                          {facts.map((fact, index) => (
+                            <div
+                              key={index}
+                              className="p-2 bg-muted/30 rounded text-xs flex items-start gap-2 transition-all duration-300 hover:bg-muted/40 hover:shadow-sm animate-in fade-in-50 slide-in-from-left-2"
+                              style={{ animationDelay: `${index * 100}ms` }}
+                            >
+                              <FileText className="h-3 w-3 text-muted-foreground mt-0.5 flex-shrink-0" />
+                              <div>
+                                <strong>Fact {index + 1}:</strong> {fact.document}
+                              </div>
                             </div>
-                          </div>
-                        ))}
-                      </div>
+                          ))}
+                        </div>
+                      ) : (
+                        <div className="text-xs text-muted-foreground">No facts available.</div>
+                      )}
                     </div>
                   </CollapsibleContent>
                 </Collapsible>
               </div>
-
               <div className="bg-muted/20 rounded-lg transition-all duration-300 hover:bg-muted/25 hover:shadow-sm">
-                <Collapsible open={expandedSections.summaries} onOpenChange={() => toggleSection("summaries")}>
+                <Collapsible open={expandedSections.summaries} onOpenChange={() => toggleSection("summaries")}> 
                   <CollapsibleTrigger asChild>
                     <div className="cursor-pointer hover:bg-muted/30 transition-all duration-200 ease-in-out p-3 rounded-lg">
                       <div className="flex items-center justify-between text-sm">
                         <div className="flex items-center gap-2">
                           <Database className="h-4 w-4 text-muted-foreground transition-colors duration-200" />
-                          Summaries ({mockSummaries.length})
+                          Summaries ({summaries.length})
                         </div>
                         <div className="transition-transform duration-300 ease-in-out">
                           {expandedSections.summaries ? (
@@ -768,25 +802,32 @@ export function SeniorChat() {
                   </CollapsibleTrigger>
                   <CollapsibleContent className="transition-all duration-300 ease-in-out data-[state=open]:animate-in data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=open]:fade-in-0 data-[state=closed]:slide-out-to-top-1 data-[state=open]:slide-in-from-top-1">
                     <div className="px-3 pb-3">
-                      <div className="space-y-2">
-                        {mockSummaries.map((summary, index) => (
-                          <div
-                            key={index}
-                            className="p-2 bg-muted/30 rounded text-xs flex items-start gap-2 transition-all duration-300 hover:bg-muted/40 hover:shadow-sm animate-in fade-in-50 slide-in-from-left-2"
-                            style={{ animationDelay: `${index * 100}ms` }}
-                          >
-                            <Database className="h-3 w-3 text-muted-foreground mt-0.5 flex-shrink-0" />
-                            <div>
-                              <strong>Summary {index + 1}:</strong> {summary}
+                      {memoryLoading ? (
+                        <div className="text-xs text-muted-foreground">Loading summaries...</div>
+                      ) : memoryError ? (
+                        <div className="text-xs text-red-500">Error: {memoryError}</div>
+                      ) : summaries.length > 0 ? (
+                        <div className="space-y-2">
+                          {summaries.map((summary, index) => (
+                            <div
+                              key={index}
+                              className="p-2 bg-muted/30 rounded text-xs flex items-start gap-2 transition-all duration-300 hover:bg-muted/40 hover:shadow-sm animate-in fade-in-50 slide-in-from-left-2"
+                              style={{ animationDelay: `${index * 100}ms` }}
+                            >
+                              <Database className="h-3 w-3 text-muted-foreground mt-0.5 flex-shrink-0" />
+                              <div>
+                                <strong>Summary {index + 1}:</strong> {summary.document}
+                              </div>
                             </div>
-                          </div>
-                        ))}
-                      </div>
+                          ))}
+                        </div>
+                      ) : (
+                        <div className="text-xs text-muted-foreground">No summaries available.</div>
+                      )}
                     </div>
                   </CollapsibleContent>
                 </Collapsible>
               </div>
-
               <div
                 className="bg-muted/20 rounded-lg p-3 transition-all duration-300 hover:bg-muted/25 hover:shadow-sm animate-in fade-in-50 duration-300"
                 style={{ animationDelay: "200ms" }}
@@ -801,14 +842,14 @@ export function SeniorChat() {
                     style={{ animationDelay: "300ms" }}
                   >
                     <FileText className="h-3 w-3" />
-                    Facts added: 0
+                    Facts added: {facts.length}
                   </div>
                   <div
                     className="flex items-center gap-2 animate-in fade-in-50 slide-in-from-left-2 duration-300"
                     style={{ animationDelay: "400ms" }}
                   >
                     <Database className="h-3 w-3" />
-                    Summaries added: 0
+                    Summaries added: {summaries.length}
                   </div>
                 </div>
               </div>
@@ -931,6 +972,80 @@ export function SeniorChat() {
     }
   }
 
+  // Modified LiveWaveform component for dynamic playback animation
+  function LiveWaveform({ isRecording, isPlaying }: { isRecording?: boolean, isPlaying?: boolean }) {
+    const [bars, setBars] = useState<number[]>([])
+    const animationRef = useRef<number | undefined>(undefined)
+
+    useEffect(() => {
+      const animate = () => {
+        // Generate random bar heights for live animation
+        const newBars = Array.from({ length: 20 }, () =>
+          Math.random() * 0.8 + 0.2 // Random height between 0.2 and 1.0
+        )
+        setBars(newBars)
+        animationRef.current = requestAnimationFrame(animate)
+      }
+
+      if (isRecording || isPlaying) {
+        animate()
+      } else {
+        if (animationRef.current) {
+          cancelAnimationFrame(animationRef.current)
+        }
+        // When not recording or playing, set bars to a static, less active state
+        setBars(Array.from({ length: 20 }, () => Math.random() * 0.2 + 0.1)) // Smaller, static bars
+      }
+
+      return () => {
+        if (animationRef.current) {
+          cancelAnimationFrame(animationRef.current)
+        }
+      }
+    }, [isRecording, isPlaying])
+
+    return (
+      <div className="flex items-center gap-1 h-8 px-2">
+        {bars.map((height, index) => (
+          <div
+            key={index}
+            className={`w-1 rounded-full transition-all duration-100 ${
+              isRecording
+                ? 'bg-red-500 animate-pulse'
+                : isPlaying
+                ? 'bg-blue-500 animate-pulse'
+                : 'bg-gray-400'
+            }`}
+            style={{
+              height: `${height * 100}%`,
+              animationDelay: `${index * 50}ms`,
+              animationDuration: '1s'
+            }}
+          />
+        ))}
+      </div>
+    )
+  }
+
+  // Add function to toggle text display for a message
+  const toggleTextDisplay = (messageId: string) => {
+    setShowTextForMessages(prev => {
+      const newSet = new Set(prev)
+      if (newSet.has(messageId)) {
+        newSet.delete(messageId)
+      } else {
+        newSet.add(messageId)
+      }
+      return newSet
+    })
+  }
+
+  // Add play/pause state for each assistant message
+  const [playingWaveformId, setPlayingWaveformId] = useState<string | null>(null)
+  const waveformAudioRefs = useRef<{ [id: string]: HTMLAudioElement | null }>({})
+  // Add state to store audio URLs for each message
+  const [audioUrls, setAudioUrls] = useState<{ [id: string]: string }>({})
+
   return (
     <div className="flex flex-col h-screen bg-background transition-smooth">
       {/* Header */}
@@ -997,21 +1112,8 @@ export function SeniorChat() {
                 <Settings className="h-3 w-3 mr-1 transition-smooth-fast" />
                 Settings
               </Button>
+              {/* Chat subtab button intentionally removed to keep functionality but hide from UI */}
             </div>
-
-            {/* Voice Controls */}
-            {speechSupported && (
-              <Button
-                variant="ghost"
-                size="icon"
-                onClick={isSpeaking ? stopSpeaking : undefined}
-                className={`h-8 w-8 hover:bg-muted/40 text-muted-foreground transition-smooth-fast hover:scale-110 active:scale-90 ${isSpeaking ? "text-orange-400 animate-smooth-pulse" : ""}`}
-                title={isSpeaking ? "Stop speaking" : "Text-to-speech available"}
-                disabled={!isSpeaking}
-              >
-                {isSpeaking ? <VolumeX className="h-4 w-4" /> : <Volume2 className="h-4 w-4" />}
-              </Button>
-            )}
 
             <div className="transition-smooth-fast hover:scale-105">
               <ThemeToggle />
@@ -1023,186 +1125,255 @@ export function SeniorChat() {
       {/* Main Content Area */}
       <div className="flex-1 flex overflow-hidden">
         {/* Main Content Wrapper - animates width */}
-        <div className={`main-content-compress${activeSubTab ? ' main-content-compress-active' : ''} h-full flex flex-col`}>
+        <div className={`main-content-compress${activeSubTab ? ' main-content-compress-active' : ''} h-full flex flex-col w-full min-h-0`}>
           {/* Chat Interface - Always visible */}
-          <div className="flex flex-col flex-1 w-full min-w-0 transition-smooth-slow">
+          <div className="flex flex-col flex-1 w-full min-h-0 transition-smooth-slow">
             {/* Messages */}
-            <div className="flex-1 overflow-y-auto p-4 space-y-4">
-              {messages.length === 0 && (
-                <div className="p-6 text-center max-w-2xl mx-auto bg-muted/10 rounded-lg transition-smooth hover:bg-muted/15 animate-smooth-fade-in hover-smooth">
-                  <div className="space-y-4">
-                    <div className="flex justify-center">
-                      <div
-                        className="relative w-16 h-16 animate-smooth-bounce"
-                        style={{ animationDelay: "200ms" }}
-                      >
-                        {mounted && (
-                        <Image
-                          src={theme === "dark" ? "/memora-dark.png" : "/memora-light.png"}
-                          alt="Memora Logo"
-                          width={64}
-                          height={64}
-                            className="object-contain transition-smooth-slow animate-smooth-float"
-                          priority
-                        />
-                        )}
-                      </div>
-                    </div>
-                    <h2
-                      className="text-lg font-medium text-foreground animate-smooth-slide-up"
-                      style={{ animationDelay: "300ms" }}
-                    >
-                      Welcome to Memora
-                    </h2>
-                    <p
-                      className="text-muted-foreground animate-smooth-slide-up"
-                      style={{ animationDelay: "400ms" }}
-                    >
-                      I'm here to be your supportive and engaging conversational partner. You can type your message or use
-                      voice recording to chat with me.
-                    </p>
-                    <div className="flex flex-wrap gap-2 justify-center">
-                      {[
-                        { icon: FileText, text: "History Discussions" },
-                        { icon: Calendar, text: "Calendar Management" },
-                        { icon: Brain, text: "Memory Assistance" },
-                        { icon: Heart, text: "Friendly Conversation" },
-                      ].map((item, index) => (
-                        <Badge
-                          key={item.text}
-                          variant="outline"
-                          className="flex items-center gap-1 bg-muted/20 text-muted-foreground transition-smooth hover:bg-muted/30 hover:scale-105 animate-smooth-slide-up hover-smooth"
-                          style={{ animationDelay: `${500 + index * 100}ms` }}
+            <div className="flex-1 min-h-0 overflow-y-auto flex flex-col items-center p-4">
+              <div className="w-full max-w-2xl space-y-6">
+                {messages.length === 0 && (
+                  <div className="p-6 text-center max-w-2xl mx-auto bg-muted/10 rounded-lg transition-smooth hover:bg-muted/15 animate-smooth-fade-in hover-smooth">
+                    <div className="space-y-4">
+                      <div className="flex justify-center">
+                        <div
+                          className="relative w-16 h-16 animate-smooth-bounce"
+                          style={{ animationDelay: "200ms" }}
                         >
-                          <item.icon className="h-3 w-3" />
-                          {item.text}
-                        </Badge>
-                      ))}
-                    </div>
-                    {speechSupported && (
-                      <div
-                        className="flex items-center justify-center gap-2 text-sm text-muted-foreground animate-smooth-slide-up"
-                        style={{ animationDelay: "900ms" }}
-                      >
-                        <Mic className="h-4 w-4" />
-                        <span>Voice recording and text-to-speech enabled</span>
+                          {mounted && (
+                          <Image
+                            src={theme === "dark" ? "/memora-dark.png" : "/memora-light.png"}
+                            alt="Memora Logo"
+                            width={64}
+                            height={64}
+                              className="object-contain transition-smooth-slow animate-smooth-float"
+                            priority
+                          />
+                          )}
+                        </div>
                       </div>
-                    )}
+                      <h2
+                        className="text-lg font-medium text-foreground animate-smooth-slide-up"
+                        style={{ animationDelay: "300ms" }}
+                      >
+                        Welcome to Memora
+                      </h2>
+                      <p
+                        className="text-muted-foreground animate-smooth-slide-up"
+                        style={{ animationDelay: "400ms" }}
+                      >
+                        I'm here to be your supportive and engaging conversational partner. You can type your message or use
+                        voice recording to chat with me.
+                      </p>
+                      <div className="flex flex-wrap gap-2 justify-center">
+                        {[
+                          { icon: FileText, text: "History Discussions" },
+                          { icon: Calendar, text: "Calendar Management" },
+                          { icon: Brain, text: "Memory Assistance" },
+                          { icon: Heart, text: "Friendly Conversation" },
+                        ].map((item, index) => (
+                          <Badge
+                            key={item.text}
+                            variant="outline"
+                            className="flex items-center gap-1 bg-muted/20 text-muted-foreground transition-smooth hover:bg-muted/30 hover:scale-105 animate-smooth-slide-up hover-smooth"
+                            style={{ animationDelay: `${500 + index * 100}ms` }}
+                          >
+                            <item.icon className="h-3 w-3" />
+                            {item.text}
+                          </Badge>
+                        ))}
+                      </div>
+                      {speechSupported && (
+                        <div
+                          className="flex items-center justify-center gap-2 text-sm text-muted-foreground animate-smooth-slide-up"
+                          style={{ animationDelay: "900ms" }}
+                        >
+                          <Mic className="h-4 w-4" />
+                          <span>Voice recording and text-to-speech enabled</span>
+                        </div>
+                      )}
+                    </div>
                   </div>
-                </div>
-              )}
+                )}
 
-              {messages.map((message, index) => (
-                <div
-                  key={message.id}
-                  className={`flex ${message.role === "user" ? "justify-end" : "justify-start"} animate-smooth-slide-up`}
-                  style={{ animationDelay: `${index * 100}ms` }}
-                >
+                {messages.map((message, index) => (
                   <div
-                    className={`max-w-[80%] rounded-lg px-4 py-2 transition-smooth hover:shadow-sm hover-smooth ${
-                      message.role === "user"
-                        ? message.id === previewMessageId
-                          ? "bg-green-500/80 text-white hover:bg-green-500/90 border-2 border-green-400/50 animate-pulse"
-                          : "bg-primary/80 text-primary-foreground hover:bg-primary/90"
-                        : "bg-muted/30 text-foreground hover:bg-muted/40"
-                    }`}
+                    key={message.id}
+                    className={`flex w-full animate-smooth-slide-up`}
+                    style={{ animationDelay: `${index * 100}ms` }}
                   >
-                    <div className="text-sm whitespace-pre-wrap">{message.content}</div>
-                    {message.id === previewMessageId && (
-                      <div className="mt-1 text-xs text-green-200 opacity-75">
-                        ✏️ Edit and click send to process
+                    <div
+                      className={`max-w-xl rounded-lg px-4 py-2 transition-smooth hover:shadow-sm hover-smooth ${
+                        message.role === "user"
+                          ? `ml-auto bg-primary/80 text-primary-foreground hover:bg-primary/90${message.id === previewMessageId ? " bg-green-500/80 text-white hover:bg-green-500/90 border-2 border-green-400/50 animate-pulse" : ""}`
+                          : `mr-auto ${theme === 'light' ? 'bg-gray-100' : 'bg-muted/30'} text-foreground ${theme === 'light' ? 'hover:bg-gray-200' : 'hover:bg-muted/40'}`
+                      }`}
+                    >
+                      {message.role === "user" && (
+                        <>
+                          <div className="text-sm whitespace-pre-wrap">{message.content}</div>
+                          {message.id === previewMessageId && (
+                            <div className="mt-1 text-xs text-green-200 opacity-75">
+                              ✏️ Edit and click send to process
+                            </div>
+                          )}
+                        </>
+                      )}
+                      {message.role === "assistant" && (
+                        <>
+                          {showTextForMessages.has(message.id) ? (
+                            // Show text content only
+                            <>
+                              <div className="text-sm whitespace-pre-wrap">{message.content}</div>
+                              <div className="flex items-center gap-2 mt-2">
+                                <Button
+                                  variant="ghost"
+                                  size="sm"
+                                  onClick={() => toggleTextDisplay(message.id)}
+                                  className="h-6 px-2 text-xs hover:bg-background/30 text-muted-foreground transition-smooth-fast hover:scale-105 active:scale-95"
+                                >
+                                  <Volume2 className="h-3 w-3 mr-1" /> Show audio
+                                </Button>
+                              </div>
+                            </>
+                          ) : (
+                            // Show waveform and audio controls
+                            <>
+                              {message.audioBlob && (
+                                <div className="flex items-center gap-2 mt-2">
+                                  <Button
+                                    variant="ghost"
+                                    size="sm"
+                                    onClick={async () => {
+                                      try {
+                                        if (playingWaveformId === message.id) {
+                                          waveformAudioRefs.current[message.id]?.pause()
+                                        } else {
+                                          // Pause any other playing audio
+                                          Object.keys(waveformAudioRefs.current).forEach(id => {
+                                            if (id !== message.id) waveformAudioRefs.current[id]?.pause()
+                                          })
+
+                                          // Create URL if it doesn't exist
+                                          if (!audioUrls[message.id]) {
+                                            const url = URL.createObjectURL(message.audioBlob!)
+                                            setAudioUrls(prev => ({ ...prev, [message.id]: url }))
+                                          }
+
+                                          // Play the audio
+                                          const audioElement = waveformAudioRefs.current[message.id]
+                                          if (audioElement) {
+                                            await audioElement.play()
+                                          }
+                                        }
+                                      } catch (error) {
+                                        console.error('Error playing audio:', error)
+                                      }
+                                    }}
+                                    className="h-8 w-8 p-0 hover:bg-background/30 text-muted-foreground transition-smooth-fast hover:scale-105 active:scale-95"
+                                  >
+                                    {playingWaveformId === message.id ? (
+                                      <Pause className="h-4 w-4" />
+                                    ) : (
+                                      <Play className="h-4 w-4" />
+                                    )}
+                                  </Button>
+                                  <LiveWaveform isPlaying={playingWaveformId === message.id} />
+                                  {audioUrls[message.id] && (
+                                    <audio
+                                      ref={el => { waveformAudioRefs.current[message.id] = el }}
+                                      src={audioUrls[message.id]}
+                                      onPlay={() => setPlayingWaveformId(message.id)}
+                                      onPause={() => setPlayingWaveformId(prev => (prev === message.id ? null : prev))}
+                                      onEnded={() => setPlayingWaveformId(null)}
+                                      onError={(e) => console.error('Audio error:', e)}
+                                      style={{ display: 'none' }}
+                                    />
+                                  )}
+                                  <Button
+                                    variant="ghost"
+                                    size="sm"
+                                    onClick={() => toggleTextDisplay(message.id)}
+                                    className="h-6 px-2 text-xs hover:bg-background/30 text-muted-foreground transition-smooth-fast hover:scale-105 active:scale-95"
+                                  >
+                                    <FileText className="h-3 w-3 mr-1" /> Show text
+                                  </Button>
+                                </div>
+                              )}
+                            </>
+                          )}
+                        </>
+                      )}
+                    </div>
+                  </div>
+                ))}
+                {isRecording && (
+                  <div className="flex w-full animate-smooth-slide-up">
+                    <div className={`max-w-xl rounded-lg px-4 py-2 transition-smooth hover:shadow-sm hover-smooth ml-auto bg-primary/80 text-primary-foreground hover:bg-primary/90`}>
+                      <div className="flex items-center gap-3">
+                        <div className="relative">
+                          <div className="w-4 h-4 bg-red-500 rounded-full animate-pulse"></div>
+                          <div className="absolute inset-0 w-4 h-4 bg-red-400 rounded-full animate-ping opacity-75"></div>
+                        </div>
+                        <div className="flex flex-col">
+                          <span className="text-sm font-medium">Recording...</span>
+                          <span className="text-xs opacity-80">
+                            {Math.floor(recordingDuration / 60)}:{(recordingDuration % 60).toString().padStart(2, '0')}
+                          </span>
+                        </div>
+                        <LiveWaveform isRecording={true} />
                       </div>
-                    )}
-                    {message.role === "assistant" && speechSupported && (
-                      <Button
-                        variant="ghost"
-                        size="sm"
-                        onClick={() => speakText(message.content, message.id)}
-                        className="mt-2 h-6 px-2 text-xs hover:bg-background/30 text-muted-foreground transition-smooth-fast hover:scale-105 active:scale-95"
-                        disabled={isSpeaking && playingMessageId === message.id}
-                      >
-                        {isSpeaking && playingMessageId === message.id ? (
-                          <>
-                            <VolumeX className="h-3 w-3 mr-1" /> Speaking... (Stop)
-                          </>
-                        ) : (
-                          <>
-                            <Volume2 className="h-3 w-3 mr-1" /> Read aloud
-                          </>
-                        )}
-                      </Button>
-                    )}
-                    {/* Audio element for TTS playback (only for the currently playing message) */}
-                    {message.role === "assistant" && playingAudioUrl && playingMessageId === message.id && (
-                      <audio
-                        ref={audioRef}
-                        src={playingAudioUrl}
-                        onEnded={stopSpeaking}
-                        onPause={stopSpeaking}
-                        style={{ display: 'none' }}
-                        autoPlay
-                      />
-                    )}
-                  </div>
-                </div>
-              ))}
-
-              {isRecording && (
-                <div className="flex justify-center animate-smooth-scale">
-                  <div className={`bg-primary/10 rounded-lg px-4 py-3 flex items-center gap-3 transition-all duration-300 hover:bg-primary/15 ${
-                    showRecordingPulse ? 'scale-105 shadow-lg' : 'scale-100'
-                  }`}>
-                    <div className="relative">
-                      <div className={`w-4 h-4 bg-red-500 rounded-full animate-pulse ${
-                        showRecordingPulse ? 'scale-125' : 'scale-100'
-                      } transition-transform duration-300`}></div>
-                      <div className="absolute inset-0 w-4 h-4 bg-red-400 rounded-full animate-ping opacity-75"></div>
-                    </div>
-                    <div className="flex flex-col">
-                      <span className="text-sm font-medium text-primary/90">Recording...</span>
-                      <span className="text-xs text-primary/70">
-                        {Math.floor(recordingDuration / 60)}:{(recordingDuration % 60).toString().padStart(2, '0')}
-                      </span>
-                    </div>
-                    <div className="flex space-x-1">
-                      {[...Array(3)].map((_, i) => (
-                        <div
-                          key={i}
-                          className={`w-1 h-3 bg-primary/60 rounded-full animate-pulse ${
-                            showRecordingPulse ? 'bg-primary/80' : 'bg-primary/40'
-                          }`}
-                          style={{
-                            animationDelay: `${i * 0.2}s`,
-                            animationDuration: '1s'
-                          }}
-                        ></div>
-                      ))}
                     </div>
                   </div>
-                </div>
-              )}
-
-              {isLoading && (
-                <div className="flex justify-start animate-smooth-slide-up">
-                  <div className="bg-muted/30 rounded-lg px-4 py-2 max-w-[80%] transition-smooth hover:bg-muted/40">
-                    <div className="flex items-center space-x-2">
-                      <div className="animate-smooth-pulse flex space-x-1">
-                        <div className="w-2 h-2 bg-muted-foreground/40 rounded-full animate-smooth-bounce"></div>
-                        <div
-                          className="w-2 h-2 bg-muted-foreground/40 rounded-full animate-smooth-bounce"
-                          style={{ animationDelay: "0.1s" }}
-                        ></div>
-                        <div
-                          className="w-2 h-2 bg-muted-foreground/40 rounded-full animate-smooth-bounce"
-                          style={{ animationDelay: "0.2s" }}
-                        ></div>
+                )}
+                {showTranscriptionReady && (
+                  <div className="flex w-full animate-smooth-slide-up">
+                    <div className="max-w-xl rounded-lg px-4 py-2 transition-smooth hover:shadow-sm hover:smooth ml-auto bg-green-500/10 text-green-900 dark:text-green-200 border border-green-400/30 shadow-green-200/20">
+                      <div className="flex items-center gap-3">
+                        <div className="relative">
+                          <div className="w-4 h-4 bg-green-500 rounded-full animate-pulse"></div>
+                          <div className="absolute inset-0 w-4 h-4 bg-green-400 rounded-full animate-ping opacity-75"></div>
+                        </div>
+                        <div className="flex flex-col">
+                          <span className="text-sm font-medium">Transcription ready!</span>
+                          <span className="text-xs opacity-80">Click send to process your message</span>
+                        </div>
+                        <div className="flex space-x-1">
+                          {[...Array(3)].map((_, i) => (
+                            <div
+                              key={i}
+                              className="w-1 h-3 bg-green-500/60 rounded-full"
+                              style={{
+                                animation: `processingWave 1.2s ease-in-out infinite`,
+                                animationDelay: `${i * 0.15}s`
+                              }}
+                            ></div>
+                          ))}
+                        </div>
                       </div>
-                      <span className="text-sm text-muted-foreground">Memora is thinking...</span>
                     </div>
                   </div>
-                </div>
-              )}
-
+                )}
+                {isLoading && (
+                  <div className="flex w-full animate-smooth-slide-up">
+                    <div className={`max-w-xl rounded-lg px-4 py-2 transition-smooth hover:shadow-sm hover-smooth mr-auto ${theme === 'light' ? 'bg-gray-100' : 'bg-muted/30'} text-foreground ${theme === 'light' ? 'hover:bg-gray-200' : 'hover:bg-muted/40'}`}>
+                      <div className="flex items-center space-x-2">
+                        <div className="animate-smooth-pulse flex space-x-1">
+                          <div className="w-2 h-2 bg-muted-foreground/40 rounded-full animate-smooth-bounce"></div>
+                          <div
+                            className="w-2 h-2 bg-muted-foreground/40 rounded-full animate-smooth-bounce"
+                            style={{ animationDelay: "0.1s" }}
+                          ></div>
+                          <div
+                            className="w-2 h-2 bg-muted-foreground/40 rounded-full animate-smooth-bounce"
+                            style={{ animationDelay: "0.2s" }}
+                          ></div>
+                        </div>
+                        <span className="text-sm text-muted-foreground">Memora is thinking...</span>
+                      </div>
+                    </div>
+                  </div>
+                )}
+              </div>
               {isProcessingAudio && (
                 <div className="flex justify-center animate-smooth-scale">
                   <div className="bg-primary/10 rounded-lg px-4 py-3 flex items-center gap-3 transition-all duration-300 hover:bg-primary/15">
@@ -1229,88 +1400,67 @@ export function SeniorChat() {
                   </div>
                 </div>
               )}
-
-              {showTranscriptionReady && (
-                <div className="flex justify-center animate-smooth-scale">
-                  <div className="bg-green-500/10 rounded-lg px-4 py-3 flex items-center gap-3 transition-all duration-300 hover:bg-green-500/15">
-                    <div className="relative">
-                      <div className="w-4 h-4 bg-green-500 rounded-full animate-pulse"></div>
-                      <div className="absolute inset-0 w-4 h-4 bg-green-400 rounded-full animate-ping opacity-75"></div>
-                    </div>
-                    <div className="flex flex-col">
-                      <span className="text-sm font-medium text-green-700 dark:text-green-400">Transcription ready!</span>
-                      <span className="text-xs text-green-600 dark:text-green-500">Click send to process your message</span>
-                    </div>
-                    <div className="flex space-x-1">
-                      {[...Array(3)].map((_, i) => (
-                        <div
-                          key={i}
-                          className="w-1 h-3 bg-green-500/60 rounded-full"
-                          style={{
-                            animation: `processingWave 1.2s ease-in-out infinite`,
-                            animationDelay: `${i * 0.15}s`
-                          }}
-                        ></div>
-                      ))}
-                    </div>
-                  </div>
+              {recordingAudioBlob && !isRecording && (
+                <div className="my-2">
+                  {/* This LiveWaveform is just for a visual indicator, not actual playback */}
+                  <LiveWaveform isRecording={false} isPlaying={false} />
                 </div>
               )}
             </div>
 
-            {/* Input */}
-            <div className="bg-muted/10 p-4 transition-smooth border-t border-gray-200 dark:border-muted/30">
-              <form onSubmit={handleSubmit} className="flex items-center gap-2 bg-muted rounded-full px-6 py-3 shadow-md w-full max-w-2xl mx-auto mb-4">
-                <div className="flex-1 relative">
-                  <Input
-                    value={input}
-                    onChange={handleInputChange}
-                    placeholder={isRecording ? "Recording..." : "Type your message or click the microphone to speak..."}
-                    className={`flex-1 bg-transparent border-none focus:ring-0 rounded-full text-base pr-12 transition-smooth-fast ${
-                      showTranscriptionReady 
-                        ? 'border-green-500/50 bg-green-500/5 shadow-lg shadow-green-500/20 animate-pulse' 
-                        : ''
-                    }`}
-                    disabled={isLoading || isRecording}
-                  />
-                  {speechSupported && (
-                    <Button
-                      type="button"
-                      variant="ghost"
-                      size="icon"
-                      onClick={isRecording ? stopRecording : startRecording}
-                      className={`absolute right-1 top-1/2 -translate-y-1/2 h-10 w-10 rounded-full hover:bg-muted/40 text-muted-foreground transition-all duration-300 hover:scale-110 active:scale-95 ${
-                        isRecording 
-                          ? "text-red-500 bg-red-500/10 shadow-lg shadow-red-500/20 animate-pulse" 
-                          : "hover:shadow-md hover:shadow-primary/20"
+              {/* Input - sticky at bottom, outside scrollable area */}
+              <div className="bg-background p-4 transition-smooth border-t border-gray-200 dark:border-muted/30 sticky bottom-0 w-full z-10">
+                <form onSubmit={handleSubmit} className="flex items-center gap-2 bg-background rounded-full px-6 py-3 shadow-md w-full max-w-2xl mx-auto mb-4">
+                  <div className="flex-1 relative">
+                    <Input
+                      value={input}
+                      onChange={handleInputChange}
+                      placeholder={isRecording ? "Recording..." : "Type your message or click the microphone to speak..."}
+                      className={`flex-1 bg-transparent border-none focus:ring-0 rounded-full text-base pr-12 transition-smooth-fast ${
+                        showTranscriptionReady
+                          ? 'border-green-500/50 bg-green-500/5 shadow-lg shadow-green-500/20 animate-pulse'
+                          : ''
                       }`}
-                      disabled={isLoading}
-                      title={isRecording ? "Stop recording" : "Start voice recording"}
-                    >
-                      <div className="relative">
-                        {isRecording ? <MicOff className="h-5 w-5" /> : <Mic className="h-5 w-5" />}
-                        {isRecording && (
-                          <div className="absolute -top-1 -right-1 w-3 h-3 bg-red-500 rounded-full animate-ping"></div>
-                        )}
-                      </div>
-                    </Button>
-                  )}
-                </div>
-                <Button
-                  type="submit"
-                  disabled={isLoading || !input.trim() || isRecording}
-                  className={`rounded-full transition-smooth-fast hover:scale-105 active:scale-95 hover:shadow-sm disabled:opacity-50 disabled:cursor-not-allowed ${
-                    showTranscriptionReady 
-                      ? 'bg-green-500/80 hover:bg-green-500/90 text-white shadow-lg shadow-green-500/30 animate-pulse' 
-                      : 'bg-primary/70 hover:bg-primary/80 text-primary-foreground'
-                  }`}
-                >
-                  <Send className="h-4 w-4 transition-smooth-fast group-hover:translate-x-0.5" />
-                </Button>
-              </form>
+                      disabled={isLoading || isRecording}
+                    />
+                    {speechSupported && (
+                      <Button
+                        type="button"
+                        variant="ghost"
+                        size="icon"
+                        onClick={isRecording ? stopRecording : startRecording}
+                        className={`absolute right-1 top-1/2 -translate-y-1/2 h-10 w-10 rounded-full hover:bg-muted/40 text-muted-foreground transition-all duration-300 hover:scale-110 active:scale-95 ${
+                          isRecording
+                            ? "text-red-500 bg-red-500/10 shadow-lg shadow-red-500/20 animate-pulse"
+                            : "hover:shadow-md hover:shadow-primary/20"
+                        }`}
+                        disabled={isLoading}
+                        title={isRecording ? "Stop recording" : "Start voice recording"}
+                      >
+                        <div className="relative">
+                          {isRecording ? <MicOff className="h-5 w-5" /> : <Mic className="h-5 w-5" />}
+                          {isRecording && (
+                            <div className="absolute -top-1 -right-1 w-3 h-3 bg-red-500 rounded-full animate-ping"></div>
+                          )}
+                        </div>
+                      </Button>
+                    )}
+                  </div>
+                  <Button
+                    type="submit"
+                    disabled={isLoading || !input.trim() || isRecording}
+                    className={`rounded-full transition-smooth-fast hover:scale-105 active:scale-95 hover:shadow-sm disabled:opacity-50 disabled:cursor-not-allowed ${
+                      showTranscriptionReady
+                        ? 'bg-green-500/80 hover:bg-green-500/90 text-white shadow-lg shadow-green-500/30 animate-pulse'
+                        : 'bg-primary/70 hover:bg-primary/80 text-primary-foreground'
+                    }`}
+                  >
+                    <Send className="h-4 w-4 transition-smooth-fast group-hover:translate-x-0.5" />
+                  </Button>
+                </form>
+              </div>
             </div>
           </div>
-        </div>
 
         {/* Sub-tab Panel - Flex sibling, compresses main content */}
         {activeSubTab && (

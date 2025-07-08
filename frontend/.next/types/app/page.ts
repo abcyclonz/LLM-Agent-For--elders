@@ -1,4 +1,4 @@
-// File: /home/aaazziimm/Music/LLM-Agent-For--elders-main/frontend/app/page.tsx
+// File: /home/aaazziimm/Music/LLM-Agent-For--elders/frontend/app/page.tsx
 import * as entry from '../../../app/page.js'
 import type { ResolvingMetadata, ResolvingViewport } from 'next/dist/lib/metadata/types/metadata-interface.js'
 
