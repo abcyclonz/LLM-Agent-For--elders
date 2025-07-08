@@ -1,5 +1,5 @@
 # main.py (FastAPI Application)
-
+#maingg
 from fastapi import FastAPI, HTTPException, UploadFile, File, Form, Response
 from pydantic import BaseModel
 import uvicorn
@@ -18,7 +18,6 @@ import whisper
 import numpy as np
 import torchaudio
 import torch
-# Removed torch.serialization as it was only used for Coqui TTS safe_globals
 
 # --- Kokoro TTS Imports ---
 try:
@@ -27,10 +26,6 @@ except ImportError:
     print("CRITICAL ERROR: Kokoro TTS library (kokoro) not found. Please install it with `pip install kokoro`.")
     KPipeline = None # Set to None to handle gracefully in startup_event
 
-# --- Coqui TTS (XTTSv2) Imports ---
-# ALL COQUI TTS RELATED IMPORTS REMOVED
-KOKORO_LANG_CODE = "en"
-from fastapi.middleware.cors import CORSMiddleware
 
 # --- Agent Imports ---
 from langgraph.graph import StateGraph, END
@@ -70,7 +65,7 @@ CALENDAR_ACTION = "USE_CALENDAR_TOOL"
 app = FastAPI(
     title="Senior Assistance Agent API",
     description="API for the Senior Assistance Agent, providing conversational, memory, voice input (Whisper), and voice output (Kokoro TTS).",
-    version="1.2.0", # 
+    version="1.2.0",
 )
 
 # --- CORS Configuration ---
@@ -115,7 +110,6 @@ class MemoryQueryResponse(BaseModel):
     facts: List[dict]
     summaries: List[dict]
 
-
 class VoiceOutputRequest(BaseModel):
     session_id: str
     text_to_speak: str
@@ -151,6 +145,9 @@ app_graph: StateGraph = None
 user_persona_data: dict = None
 whisper_model: whisper.Whisper = None
 
+# --- Kokoro TTS Globals ---
+kokoro_pipeline = None # The KPipeline instance
+KOKORO_LANG_CODE = 'a' # 'a' for American English, 'b' for British English
 
 
 @app.on_event("startup")
@@ -159,7 +156,6 @@ async def startup_event():
     global embedding_model, chroma_client, facts_collection, summaries_collection
     global app_graph, user_persona_data, whisper_model
     global kokoro_pipeline
-
 
     print("Initializing LLMs...")
     router_llm = ChatOllama(model=ROUTER_LLM_MODEL, temperature=0.0)
@@ -178,34 +174,22 @@ async def startup_event():
     print(f"Initializing ChromaDB client at: {CHROMA_PERSIST_PATH}")
     try:
         chroma_client = chromadb.PersistentClient(path=CHROMA_PERSIST_PATH)
-        
-        # --- Fortified Collection Creation ---
-        
-        # For the Facts Collection
         facts_collection = chroma_client.get_or_create_collection(
-            name=FACTS_COLLECTION_NAME,
-            metadata={"hnsw:space": "cosine"}
+            name=FACTS_COLLECTION_NAME, metadata={"hnsw:space": "cosine"}
         )
-        # Add a defensive check
         if facts_collection is None:
             raise ValueError(f"Failed to get or create ChromaDB collection: {FACTS_COLLECTION_NAME}")
         print(f"Fact collection '{FACTS_COLLECTION_NAME}' loaded/created. Initial count: {facts_collection.count()}")
 
-        # For the Summaries Collection
         summaries_collection = chroma_client.get_or_create_collection(
-            name=SUMMARIES_COLLECTION_NAME,
-            metadata={"hnsw:space": "cosine"}
+            name=SUMMARIES_COLLECTION_NAME, metadata={"hnsw:space": "cosine"}
         )
-        # Add a defensive check
         if summaries_collection is None:
             raise ValueError(f"Failed to get or create ChromaDB collection: {SUMMARIES_COLLECTION_NAME}")
         print(f"Summaries collection '{SUMMARIES_COLLECTION_NAME}' loaded/created. Initial count: {summaries_collection.count()}")
-        
     except Exception as e:
         print(f"CRITICAL Error initializing ChromaDB collections: {e}")
-        # This will now give a more specific error like "Failed to get or create..."
         raise RuntimeError(f"Failed to initialize ChromaDB: {e}")
-       
 
     print("Loading local Whisper model ('base' model)... This may take a moment.")
     try:
@@ -213,7 +197,6 @@ async def startup_event():
         print("Whisper model loaded successfully.")
     except Exception as e:
         print(f"CRITICAL Error loading Whisper model: {e}")
-        print("Ensure 'ffmpeg' is installed and you have sufficient memory.")
         raise RuntimeError(f"Failed to load Whisper model: {e}")
 
     print("Loading Kokoro TTS model...")
@@ -221,33 +204,31 @@ async def startup_event():
         print("Kokoro TTS (KPipeline) class not found. TTS functionality will be unavailable.")
     else:
         try:
-            # Force Kokoro TTS to use CPU
-            kokoro_pipeline = KPipeline(lang_code=KOKORO_LANG_CODE, device="gpu") # <--- ADD device="cpu" HERE
-            print("Kokoro TTS model loaded successfully (on CPU).") # Added 'on CPU' for clarity
+            kokoro_pipeline = KPipeline(lang_code=KOKORO_LANG_CODE, device="cpu")
+            print("Kokoro TTS model loaded successfully (on CPU).")
         except Exception as e:
-            kokoro_pipeline = None # Ensure pipeline is None if loading fails
+            kokoro_pipeline = None
             print(f"CRITICAL Error loading Kokoro TTS model: {e}")
             print("Ensure `kokoro` Python package is installed and `espeak-ng` system dependency is met.")
-            # print(f"Detailed Kokoro load error: {e}")
-            # raise RuntimeError(f"Failed to load Kokoro TTS model: {e}")
-
+            print(f"Detailed Kokoro load error: {e}")
+            raise RuntimeError(f"Failed to load Kokoro TTS model: {e}")
 
     print("Compiling LangGraph app...")
     app_graph = get_compiled_app()
     print("LangGraph app compiled.")
-    print("Loading user persona from user_persona.json...")
-    try:
-        with open("user_persona.json", "r") as f:
-            user_persona_data = json.load(f)
-        print("User persona loaded successfully.")
-    except FileNotFoundError:
-        print("WARNING: user_persona.json not found. Using a default empty persona.")
-        user_persona_data = {} # Fallback to an empty dict, not a hardcoded one
-    except json.JSONDecodeError:
-        print("CRITICAL ERROR: Could not parse user_persona.json. Check for syntax errors.")
-        raise RuntimeError("Failed to parse user_persona.json")
 
-    
+    # This is now the single source for the default persona.
+    user_persona_data = {
+        "name": "Aswin",
+        "age_group": "Elderly (70s)",
+        "preferred_language": "English",
+        "background": "Retired history teacher, loves sharing stories from his past.",
+        "interests": ["history", "watching old movies", "woodworking", "cricket"],
+        "communication_style_preference": "respectful, enjoys a good chat, appreciates when his experiences are acknowledged.",
+        "technology_use": "Uses a tablet for news and games.",
+        "goals_with_agent": "discuss topics of interest, reminisce,to be a friend, get help finding information online, light-hearted conversation, feel understood and less lonely."
+    }
+    print("Default user persona loaded.")
 
 # --- Helper Functions ---
 def format_messages_for_llm(messages: List[BaseMessage], max_history=10) -> str:
@@ -591,6 +572,7 @@ def generate_response_node(state: AgentState) -> dict:
     retrieved_context_str = state.get("retrieved_context")
     health_alerts = state.get("health_alerts")
 
+    # --- FIX: Get user_name dynamically from the state ---
     user_persona_data = state.get("user_persona", {})
     user_name = user_persona_data.get("name", "the user")
 
@@ -598,15 +580,14 @@ def generate_response_node(state: AgentState) -> dict:
         f"You are the '{AGENT_NAME}', a kind, patient, and empathetic AI companion. "
         "Your primary role is to be a supportive and engaging conversational partner."
     )
-
-
+    
     formatted_user_persona = format_persona_for_prompt(user_persona_data)
     if formatted_user_persona:
         system_prompt_content += f"\n\n--- User Information ---\n{formatted_user_persona}"
 
     turn_specific_task = ""
     if retrieved_context_str:
-        print("  >> Entering Focused Question-Answering Mode.")
+        print("  >> Entering Persona-Aware Question-Answering Mode.")
         qa_prompt = (
             f"You are the '{AGENT_NAME}', a helpful and kind AI companion. You are speaking directly to your friend, {user_name}.\n\n"
             "**Your Task:**\n"
@@ -624,10 +605,12 @@ def generate_response_node(state: AgentState) -> dict:
             "------------------------\n\n"
             f"**YOUR RESPONSE TO {user_name.upper()}:**"
         )
+        # --- FIX: The prompt_parts for QA mode should only contain the system message ---
         prompt_parts = [
-            SystemMessage(content=qa_prompt)   
+            SystemMessage(content=qa_prompt)
         ]
     else:
+        # This is for all other conversational modes.
         print("  >> Entering General Conversational Mode.")
         if health_alerts:
             alerts_str = "\n- ".join(health_alerts)
@@ -639,12 +622,19 @@ def generate_response_node(state: AgentState) -> dict:
                 f"{alerts_str}"
             )
         elif tool_result:
-            turn_specific_task = (
-                "Your mission is to confirm to the user that you have completed their request. "
-                "Speak naturally, as if you did it yourself. Do NOT mention a 'tool'.\n"
-                "For example, instead of 'The tool succeeded', say 'Okay, I've scheduled that for you.'\n\n"
-                f"Information to convey: '{tool_result}'"
-        )
+            if "error" in tool_result.lower() or "failed" in tool_result.lower():
+                turn_specific_task = (
+                    "Your mission is to apologize and explain that a technical problem occurred. "
+                    "Tell the user that you failed to complete the action due to a technical error with one of your tools (like the calendar tool). "
+                    "Do not show them the raw error message. Just say something went wrong and you can't do it right now."
+                )
+            else:
+                turn_specific_task = (
+                    "Your mission is to confirm to the user that you have completed their request. "
+                    "Speak naturally, as if you did it yourself. Do NOT mention a 'tool'.\n"
+                    "For example, instead of 'The tool succeeded', say 'Okay, I've scheduled that for you.'\n\n"
+                    f"Information to convey: '{tool_result}'"
+                )
         else:
             turn_specific_task = (
                 "Your mission is to be a good listener and conversational partner. "
@@ -652,7 +642,7 @@ def generate_response_node(state: AgentState) -> dict:
             )
 
         system_prompt_content += f"\n\n--- YOUR MISSION FOR THIS TURN ---\n{turn_specific_task}"
-
+        
         prompt_parts = [SystemMessage(content=system_prompt_content.strip())]
         prompt_parts.extend(state["messages"])
         prompt_parts.append(HumanMessage(content=user_input))
@@ -853,20 +843,45 @@ async def chat_voice_endpoint(
         print(f"Transcribed text: '{transcribed_text}'")
     except HTTPException as e:
         print(f"Transcription error: {e.detail}")
-        transcribed_text = f"Error transcribing audio: {e.detail}"
+        raise HTTPException(status_code=500, detail=f"Audio transcription failed: {e.detail}")
 
-    return ChatResponse(
-        session_id=session_id,
-        ai_response="",  # Empty since we're not processing
-        episodic_memory_log=[],
-        long_term_memory_log=[],
-        current_router_decision="",
-        retrieved_context_for_turn="",
-        health_alerts_for_turn=[],
-        transcribed_text=transcribed_text
-    )
+    if session_id not in session_states:
+        session_states[session_id] = {
+            "messages": [], "long_term_memory_session_log": [], "episodic_memory_session_log": [],
+            "user_persona": user_persona_data, "user_input": "", "turn_count": 0,
+            "router_decision": "", "retrieved_context": "", "tool_result": None, "health_alerts": None
+        }
 
-    
+    current_graph_input_state = session_states[session_id].copy()
+    current_graph_input_state["user_input"] = transcribed_text
+
+    print("--- Checking Health Data (Live from FastAPI endpoint) ---")
+    live_health_alerts = check_health_data()
+    current_graph_input_state["health_alerts"] = live_health_alerts
+
+    try:
+        updated_graph_output_state = app_graph.invoke(current_graph_input_state)
+        session_states[session_id] = updated_graph_output_state
+
+        ai_message_content = "Sorry, I had trouble generating a response."
+        if updated_graph_output_state.get("messages"):
+            last_message_in_graph = updated_graph_output_state["messages"][-1]
+            if isinstance(last_message_in_graph, AIMessage):
+                ai_message_content = last_message_in_graph.content
+
+        return ChatResponse(
+            session_id=session_id,
+            ai_response=ai_message_content,
+            episodic_memory_log=session_states[session_id].get("episodic_memory_session_log", []),
+            long_term_memory_log=session_states[session_id].get("long_term_memory_session_log", []),
+            current_router_decision=session_states[session_id].get("router_decision", ""),
+            retrieved_context_for_turn=session_states[session_id].get("retrieved_context", ""),
+            health_alerts_for_turn=session_states[session_id].get("health_alerts") or [],
+            transcribed_text=transcribed_text
+        )
+    except Exception as e:
+        print(f"Error invoking agent for session {session_id} after transcription: {e}")
+        raise HTTPException(status_code=500, detail=f"Internal Server Error after transcription: {e}")
 
 @app.post("/speak_response")
 async def speak_response_endpoint(request: VoiceOutputRequest):
@@ -891,7 +906,6 @@ async def speak_response_endpoint(request: VoiceOutputRequest):
     except Exception as e:
         print(f"Error during Kokoro TTS generation from endpoint: {e}")
         raise HTTPException(status_code=500, detail=f"Speech generation failed: {e}. Check Kokoro TTS setup and voice name.")
-
 
 
 @app.post("/reset_session")
