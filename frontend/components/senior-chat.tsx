@@ -29,8 +29,21 @@ import {
 import { useTheme } from "next-themes"
 import { ThemeToggle } from "./theme-toggle"
 import Image from "next/image"
+import { useAuth } from "@/components/auth-context"
 // WaveSurfer is only used for displaying the *static* waveform of a message, not live
 // import WaveSurfer from "wavesurfer.js" // Not used in this revised version, but kept if needed for other purposes
+import { Bar, Pie } from 'react-chartjs-2';
+import {
+  Chart as ChartJS,
+  CategoryScale,
+  LinearScale,
+  BarElement,
+  Title,
+  Tooltip,
+  Legend,
+  ArcElement,
+} from 'chart.js';
+ChartJS.register(CategoryScale, LinearScale, BarElement, Title, Tooltip, Legend, ArcElement);
 
 interface Message {
   id: string
@@ -41,6 +54,7 @@ interface Message {
 
 export function SeniorChat() {
   const { theme } = useTheme()
+  const { logout, sessionId } = useAuth();
   const [mounted, setMounted] = useState(false)
   const [messages, setMessages] = useState<Message[]>([])
   const [input, setInput] = useState("")
@@ -48,12 +62,8 @@ export function SeniorChat() {
 
   const [agentState, setAgentState] = useState({
     sessionId: "frontend-session",
-    userPersona: {
-      name: "Aswin",
-      ageGroup: "Elderly (70s)",
-      background: "Retired history teacher, loves sharing stories from his past",
-      interests: ["history", "watching old movies", "woodworking", "cricket"],
-    },
+    userToken: typeof window !== 'undefined' ? localStorage.getItem('memora_token') : null,
+    userPersona: null, // Will be fetched from backend
     turnCount: 0,
     routerDecision: "",
     retrievedContext: "",
@@ -99,6 +109,11 @@ export function SeniorChat() {
   const [summaries, setSummaries] = useState<any[]>([])
   const [memoryLoading, setMemoryLoading] = useState(false)
   const [memoryError, setMemoryError] = useState<string | null>(null)
+
+  // --- Add state for health data ---
+  const [healthData, setHealthData] = useState<any | null>(null)
+  const [healthLoading, setHealthLoading] = useState(false)
+  const [healthError, setHealthError] = useState<string | null>(null)
 
   // Audio feedback functions - Apple-like arpeggiated chimes, slightly lower pitch
   const playStartSound = () => {
@@ -382,6 +397,15 @@ export function SeniorChat() {
     }
   }, [])
 
+  // Update agent state when user token changes
+  useEffect(() => {
+    const token = typeof window !== 'undefined' ? localStorage.getItem('memora_token') : null
+    setAgentState(prev => ({
+      ...prev,
+      userToken: token
+    }))
+  }, [])
+
   // Voice recording functions
   const startRecording = async () => {
     try {
@@ -452,10 +476,9 @@ export function SeniorChat() {
 
     try {
       const formData = new FormData()
-      formData.append('session_id', agentState?.sessionId || 'frontend-session')
       formData.append('audio_file', audioBlob, 'recording.wav')
 
-      const response = await fetch('http://localhost:8000/chat_voice', {
+      const response = await fetch('http://localhost:8000/transcribe_audio', {
         method: 'POST',
         body: formData,
       })
@@ -465,7 +488,7 @@ export function SeniorChat() {
       }
 
       const data = await response.json()
-      console.log("Voice API response:", data)
+      console.log("Transcription API response:", data)
 
       if (data.error) {
         throw new Error(data.error)
@@ -474,29 +497,12 @@ export function SeniorChat() {
       // Show transcribed text and play notification sound
       if (data.transcribed_text) {
         playTranscriptionSound()
-        // Populate input field
-        const previewId = `user-preview-${Date.now()}`;
-        setPreviewMessageId(previewId);
-        setInput(data.transcribed_text);
-        setShowTranscriptionReady(true);
-        setMessages(prev => [...prev, {
-          id: previewId,
-          role: 'user',
-          content: data.transcribed_text
-        }]);
+        setInput(data.transcribed_text)
+        setShowTranscriptionReady(true)
         setTimeout(() => {
           setShowTranscriptionReady(false)
         }, 5000)
       }
-
-      // Update agent state if provided
-      if (data.session_id) {
-        setAgentState(prev => ({
-          ...prev,
-          sessionId: data.session_id,
-        }))
-      }
-
     } catch (error) {
       console.error("Voice transcription error:", error)
       const errorMessage: Message = {
@@ -572,12 +578,8 @@ export function SeniorChat() {
   const handleReset = () => {
     setAgentState({
       sessionId: "frontend-session",
-      userPersona: {
-        name: "Aswin",
-        ageGroup: "Elderly (70s)",
-        background: "Retired history teacher, loves sharing stories from his past",
-        interests: ["history", "watching old movies", "woodworking", "cricket"],
-      },
+      userToken: null,
+      userPersona: null, // Reset persona
       turnCount: 0,
       routerDecision: "",
       retrievedContext: "",
@@ -618,7 +620,7 @@ export function SeniorChat() {
 
   // --- Fetch profile and memory data when subtab is opened ---
   useEffect(() => {
-    const sessionId = agentState.sessionId || "frontend-session"
+    if (!sessionId) return;
     if (activeSubTab === "profile") {
       setProfileLoading(true)
       setProfileError(null)
@@ -646,7 +648,40 @@ export function SeniorChat() {
         .catch(e => setMemoryError(e.message))
         .finally(() => setMemoryLoading(false))
     }
-  }, [activeSubTab, agentState.sessionId])
+    if (activeSubTab === "health") {
+      setHealthLoading(true)
+      setHealthError(null)
+      fetch(`http://localhost:8000/get_health_data`)
+        .then(res => {
+          if (!res.ok) throw new Error(`HTTP ${res.status}`)
+          return res.json()
+        })
+        .then(data => setHealthData(data))
+        .catch(e => setHealthError(e.message))
+        .finally(() => setHealthLoading(false))
+    }
+  }, [activeSubTab, sessionId])
+
+  // Fetch user persona after login
+  useEffect(() => {
+    const token = agentState.userToken;
+    if (token && !agentState.userPersona) {
+      // Try /auth/me endpoint (adjust if you use a different one)
+      fetch("/api/get-profile", {
+        headers: { Authorization: `Bearer ${token}` },
+      })
+        .then((res) => res.json())
+        .then((data) => {
+          // Adjust this if your backend returns a different structure
+          const persona = data.user_persona || data;
+          setAgentState((prev) => ({ ...prev, userPersona: persona }));
+        })
+        .catch((err) => {
+          // Optionally handle error
+          setAgentState((prev) => ({ ...prev, userPersona: null }));
+        });
+    }
+  }, [agentState.userToken, agentState.userPersona]);
 
   const closeSubTab = () => {
     setActiveSubTab(null)
@@ -685,11 +720,13 @@ export function SeniorChat() {
                         <div className="text-xs text-red-500">Error: {profileError}</div>
                       ) : profileData ? (
                         <div className="space-y-2 text-xs">
-                          {Object.entries(profileData).map(([key, value]) => (
-                            <div key={key} className="flex items-start gap-2 animate-smooth-slide-up">
-                              <span className="font-semibold capitalize">{key.replace(/_/g, ' ')}:</span> {Array.isArray(value) ? value.join(", ") : String(value)}
-                            </div>
-                          ))}
+                          {Object.entries(profileData)
+                            .filter(([key]) => !['id', 'created_at', 'updated_at'].includes(key))
+                            .map(([key, value]) => (
+                              <div key={key} className="flex items-start gap-2 animate-smooth-slide-up">
+                                <span className="font-semibold capitalize">{key.replace(/_/g, ' ')}:</span> {Array.isArray(value) ? value.join(", ") : String(value)}
+                              </div>
+                            ))}
                         </div>
                       ) : (
                         <div className="text-xs text-muted-foreground">No profile data available.</div>
@@ -856,6 +893,206 @@ export function SeniorChat() {
             </div>
           </div>
         )
+
+      case "health":
+        // Prepare chart data if available
+        let chartData = null;
+        let chartOptions = null;
+        if (healthData) {
+          const vitalLabels = [];
+          const vitalValues = [];
+          if (typeof healthData.heart_rate !== 'undefined') {
+            vitalLabels.push('Heart Rate');
+            vitalValues.push(healthData.heart_rate);
+          }
+          if (typeof healthData.spo2 !== 'undefined') {
+            vitalLabels.push('SpO2');
+            vitalValues.push(healthData.spo2);
+          }
+          if (typeof healthData.bp_systolic !== 'undefined' && typeof healthData.bp_diastolic !== 'undefined') {
+            vitalLabels.push('BP Systolic');
+            vitalValues.push(healthData.bp_systolic);
+            vitalLabels.push('BP Diastolic');
+            vitalValues.push(healthData.bp_diastolic);
+          }
+          if (typeof healthData.sleep_score !== 'undefined') {
+            vitalLabels.push('Sleep Score');
+            vitalValues.push(healthData.sleep_score);
+          }
+          if (vitalLabels.length > 0) {
+            chartData = {
+              labels: vitalLabels,
+              datasets: [
+                {
+                  label: 'Health Metrics',
+                  data: vitalValues,
+                  backgroundColor: [
+                    'rgba(255, 99, 132, 0.5)',
+                    'rgba(54, 162, 235, 0.5)',
+                    'rgba(255, 206, 86, 0.5)',
+                    'rgba(75, 192, 192, 0.5)',
+                    'rgba(153, 102, 255, 0.5)',
+                  ],
+                  borderColor: [
+                    'rgba(255, 99, 132, 1)',
+                    'rgba(54, 162, 235, 1)',
+                    'rgba(255, 206, 86, 1)',
+                    'rgba(75, 192, 192, 1)',
+                    'rgba(153, 102, 255, 1)',
+                  ],
+                  borderWidth: 1,
+                },
+              ],
+            };
+            chartOptions = {
+              responsive: true,
+              plugins: {
+                legend: { display: false },
+                title: { display: true, text: 'Health Dashboard' },
+              },
+            };
+          }
+        }
+// Inside renderSubTabContent for case "health":
+return (
+  <div className="flex-1 overflow-y-auto p-3 space-y-3 animate-in fade-in-50 duration-500 scrollbar-thin scrollbar-thumb-muted-foreground/20 scrollbar-track-transparent">
+    <div className="space-y-3">
+      <div className="bg-muted/20 rounded-lg transition-all duration-300 hover:bg-muted/25 hover:shadow-sm p-4">
+        <div className="text-sm flex items-center gap-2 mb-2">
+          <span role="img" aria-label="Health">🩺</span>
+          Health Dashboard
+        </div>
+        {healthLoading ? (
+          <div className="text-xs text-muted-foreground">Loading health data...</div>
+        ) : healthError ? (
+          <div className="text-xs text-red-500">Error: {healthError}</div>
+        ) : healthData ? (
+          <>
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-6 mb-4">
+              {/* Heart Rate Card */}
+              {typeof healthData.heart_rate !== 'undefined' && (
+                <div className="bg-card text-card-foreground rounded-lg p-4 shadow-sm flex flex-col items-center justify-center">
+                  <div className="font-semibold text-lg mb-2">Heart Rate</div>
+                  <div className="text-4xl font-bold text-primary">{healthData.heart_rate} <span className="text-base text-muted-foreground">BPM</span></div>
+                  <div className="w-full mt-4" style={{ height: '200px' }}> {/* Explicit height for chart container */}
+                    <Bar
+                      data={{
+                        labels: ['Heart Rate'],
+                        datasets: [{
+                          label: 'BPM',
+                          data: [healthData.heart_rate],
+                          backgroundColor: 'rgba(255, 99, 132, 0.7)',
+                          borderColor: 'rgba(255, 99, 132, 1)',
+                          borderWidth: 1,
+                        }],
+                      }}
+                      options={{
+                        responsive: true,
+                        maintainAspectRatio: false, // Important for fixed height container
+                        plugins: { legend: { display: false } },
+                        scales: { y: { beginAtZero: true, max: 150 } }, // Adjusted max for typical heart rates
+                      }}
+                    />
+                  </div>
+                </div>
+              )}
+              {/* SpO2 Card */}
+              {typeof healthData.spo2 !== 'undefined' && (
+                <div className="bg-card text-card-foreground rounded-lg p-4 shadow-sm flex flex-col items-center justify-center">
+                  <div className="font-semibold text-lg mb-2">Blood Oxygen (SpO₂)</div>
+                  <div className="text-4xl font-bold text-blue-500">{healthData.spo2}<span className="text-base text-muted-foreground">%</span></div>
+                  <div className="w-full mt-4" style={{ height: '200px' }}> {/* Explicit height for chart container */}
+                    <Pie
+                      data={{
+                        labels: ['SpO₂', 'Remaining'],
+                        datasets: [{
+                          data: [healthData.spo2, 100 - healthData.spo2],
+                          backgroundColor: ['rgba(54, 162, 235, 0.7)', 'rgba(200, 200, 200, 0.2)'],
+                          borderColor: ['rgba(54, 162, 235, 1)', 'rgba(200, 200, 200, 0.2)'],
+                          borderWidth: 1,
+                        }],
+                      }}
+                      options={{
+                        responsive: true,
+                        maintainAspectRatio: false, // Important for fixed height container
+                        plugins: { legend: { display: true, position: 'bottom' } },
+                      }}
+                    />
+                  </div>
+                </div>
+              )}
+              {/* Blood Pressure Card (spanning two columns) */}
+              {typeof healthData.bp_systolic !== 'undefined' && typeof healthData.bp_diastolic !== 'undefined' && (
+                <div className="bg-card text-card-foreground rounded-lg p-4 shadow-sm col-span-1 md:col-span-2 flex flex-col items-center justify-center">
+                  <div className="font-semibold text-lg mb-2">Blood Pressure</div>
+                  <div className="text-4xl font-bold text-purple-600">{healthData.bp_systolic}<span className="text-xl text-muted-foreground">/{healthData.bp_diastolic} mmHg</span></div>
+                  <div className="w-full mt-4" style={{ height: '200px' }}> {/* Explicit height for chart container */}
+                    <Bar
+                      data={{
+                        labels: ['Systolic', 'Diastolic'],
+                        datasets: [{
+                          label: 'mmHg',
+                          data: [healthData.bp_systolic, healthData.bp_diastolic],
+                          backgroundColor: ['rgba(255, 206, 86, 0.7)', 'rgba(75, 192, 192, 0.7)'],
+                          borderColor: ['rgba(255, 206, 86, 1)', 'rgba(75, 192, 192, 1)'],
+                          borderWidth: 1,
+                        }],
+                      }}
+                      options={{
+                        responsive: true,
+                        maintainAspectRatio: false, // Important for fixed height container
+                        plugins: { legend: { display: false } },
+                        scales: { y: { beginAtZero: true, max: 200 } },
+                      }}
+                    />
+                  </div>
+                </div>
+              )}
+              {/* Sleep Score Card */}
+              {typeof healthData.sleep_score !== 'undefined' && (
+                <div className="bg-card text-card-foreground rounded-lg p-4 shadow-sm flex flex-col items-center justify-center">
+                  <div className="font-semibold text-lg mb-2">Sleep Score</div>
+                  <div className="text-4xl font-bold text-green-600">{healthData.sleep_score}<span className="text-base text-muted-foreground">/100</span></div>
+                  <div className="w-full mt-4" style={{ height: '200px' }}> {/* Explicit height for chart container */}
+                    <Pie
+                      data={{
+                        labels: ['Sleep Score', 'Remaining'],
+                        datasets: [{
+                          data: [healthData.sleep_score, 100 - healthData.sleep_score],
+                          backgroundColor: ['rgba(153, 102, 255, 0.7)', 'rgba(200, 200, 200, 0.2)'],
+                          borderColor: ['rgba(153, 102, 255, 1)', 'rgba(200, 200, 200, 0.2)'],
+                          borderWidth: 1,
+                        }],
+                      }}
+                      options={{
+                        responsive: true,
+                        maintainAspectRatio: false, // Important for fixed height container
+                        plugins: { legend: { display: true, position: 'bottom' } },
+                      }}
+                    />
+                  </div>
+                </div>
+              )}
+            </div>
+            {/* Other Health Data (if any, kept for completeness) */}
+            <div className="space-y-2 text-xs">
+              {Object.entries(healthData).map(([key, value]) => {
+                if (["heart_rate", "spo2", "bp_systolic", "bp_diastolic", "sleep_score"].includes(key)) return null;
+                return (
+                  <div key={key} className="flex items-start gap-2 animate-smooth-slide-up">
+                    <span className="font-semibold capitalize">{key.replace(/_/g, ' ')}:</span> {String(value)}
+                  </div>
+                );
+              })}
+            </div>
+          </>
+        ) : (
+          <div className="text-xs text-muted-foreground">No health data available.</div>
+        )}
+      </div>
+    </div>
+  </div>
+);
 
       case "settings":
         return (
@@ -1048,20 +1285,20 @@ export function SeniorChat() {
 
   return (
     <div className="flex flex-col h-screen bg-background transition-smooth">
-      {/* Header */}
+      {/* Restored Header with subtabs and Sign Out */}
       <div className="bg-muted/10 p-4 transition-smooth">
         <div className="flex items-center justify-between">
           <div className="flex items-center gap-6 animate-smooth-fade-in">
             <div className="relative w-8 h-8 flex-shrink-0">
               {mounted && (
-              <Image
-                src={theme === "dark" ? "/memora-dark.png" : "/memora-light.png"}
-                alt="Memora Logo"
-                width={32}
-                height={32}
+                <Image
+                  src={theme === "dark" ? "/memora-dark.png" : "/memora-light.png"}
+                  alt="Memora Logo"
+                  width={32}
+                  height={32}
                   className="object-contain transition-smooth hover:scale-110"
-                priority
-              />
+                  priority
+                />
               )}
             </div>
             <div>
@@ -1073,8 +1310,6 @@ export function SeniorChat() {
           </div>
 
           <div className="flex items-center gap-2 animate-smooth-fade-in">
-            {/* Removed agent action badge (heart/chat/calendar/memory) as per user request */}
-
             {/* Sub-tab buttons */}
             <div className="flex items-center gap-1">
               <Button
@@ -1096,6 +1331,15 @@ export function SeniorChat() {
                 Memory
               </Button>
               <Button
+                variant={activeSubTab === "health" ? "secondary" : "ghost"}
+                size="sm"
+                onClick={() => setActiveSubTab(activeSubTab === "health" ? null : "health")}
+                className="h-8 px-3 text-xs bg-muted/20 hover:bg-muted/40 text-muted-foreground transition-smooth-fast hover:scale-105 active:scale-95 hover-smooth"
+              >
+                <span role="img" aria-label="Health" className="h-3 w-3 mr-1 transition-smooth-fast">🩺</span>
+                Health
+              </Button>
+              <Button
                 variant={activeSubTab === "settings" ? "secondary" : "ghost"}
                 size="sm"
                 onClick={() => setActiveSubTab(activeSubTab === "settings" ? null : "settings")}
@@ -1104,16 +1348,18 @@ export function SeniorChat() {
                 <Settings className="h-3 w-3 mr-1 transition-smooth-fast" />
                 Settings
               </Button>
-              {/* Chat subtab button intentionally removed to keep functionality but hide from UI */}
             </div>
-
+            {/* Theme toggle */}
             <div className="transition-smooth-fast hover:scale-105">
               <ThemeToggle />
             </div>
+            {/* Sign Out button */}
+            <Button onClick={logout} variant="outline" className="ml-2">
+              Sign Out
+            </Button>
           </div>
         </div>
       </div>
-
       {/* Main Content Area */}
       <div className="flex-1 flex overflow-hidden">
         {/* Main Content Wrapper - animates width */}
@@ -1124,8 +1370,8 @@ export function SeniorChat() {
             <div className="flex-1 min-h-0 overflow-y-auto flex flex-col items-center p-4">
               <div className="w-full max-w-2xl space-y-6">
                 {messages.length === 0 && (
-                  <div className="p-6 text-center max-w-2xl mx-auto bg-muted/10 rounded-lg transition-smooth hover:bg-muted/15 animate-smooth-fade-in hover-smooth">
-                    <div className="space-y-4">
+                  <div className="flex flex-col justify-center items-center min-h-[60vh] p-6 text-center max-w-2xl mx-auto bg-muted/10 rounded-lg transition-smooth hover:bg-muted/15 animate-smooth-fade-in hover:bg-muted/15 animate-smooth-fade-in hover-smooth">
+                    <div className="space-y-4 w-full">
                       <div className="flex justify-center">
                         <div
                           className="relative w-16 h-16 animate-smooth-bounce"
@@ -1456,12 +1702,13 @@ export function SeniorChat() {
 
         {/* Sub-tab Panel - Flex sibling, compresses main content */}
         {activeSubTab && (
-          <div className="w-80 bg-muted/10 animate-subtab-slide-in-end flex flex-col h-full shadow-xl">
+          <div className={`bg-muted/10 animate-subtab-slide-in-end flex flex-col h-full shadow-xl ${activeSubTab === 'health' ? 'w-[32rem] max-w-full' : 'w-80'}`}>
             {/* Sub-tab Header */}
             <div className="bg-muted/20 p-3 flex items-center justify-between transition-smooth">
               <div className="flex items-center gap-2 animate-smooth-fade-in">
                 {activeSubTab === "profile" && <User className="h-4 w-4 text-muted-foreground" />}
                 {activeSubTab === "memory" && <Database className="h-4 w-4 text-muted-foreground" />}
+                {activeSubTab === "health" && <span role="img" aria-label="Health">🩺</span>}
                 {activeSubTab === "settings" && <Settings className="h-4 w-4 text-muted-foreground" />}
                 <h2 className="text-sm font-medium capitalize text-muted-foreground">{activeSubTab}</h2>
               </div>

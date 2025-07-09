@@ -1,4 +1,4 @@
 # --- Local Data & Databases ---
 chroma_db_store_senior_agent/
-
+memora_users.db
 __pycache__

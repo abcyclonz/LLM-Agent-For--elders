@@ -1,4 +1,5 @@
 # main.py (FastAPI Application)
+#maingg
 from fastapi import FastAPI, HTTPException, UploadFile, File, Form, Response
 from pydantic import BaseModel
 import uvicorn
@@ -9,6 +10,7 @@ import re
 from datetime import datetime
 import asyncio
 import io
+import json
 from fastapi.responses import JSONResponse
 
 # --- Local Whisper Import ---
@@ -36,7 +38,7 @@ import chromadb
 
 # --- Import the tools ---
 from calendar_tool import schedule_event
-from health_monitor_tool import check_health_data
+from health_monitor_tool import check_health_data, get_health_from_file
 
 # --- CORS Middleware Import ---
 from fastapi.middleware.cors import CORSMiddleware
@@ -63,7 +65,7 @@ CALENDAR_ACTION = "USE_CALENDAR_TOOL"
 app = FastAPI(
     title="Senior Assistance Agent API",
     description="API for the Senior Assistance Agent, providing conversational, memory, voice input (Whisper), and voice output (Kokoro TTS).",
-    version="1.2.0", # Updated version
+    version="1.2.0",
 )
 
 # --- CORS Configuration ---
@@ -86,10 +88,17 @@ app.add_middleware(
 # --- Global Agent State Storage (for simplicity in this example) ---
 session_states = {}
 
+# --- Import authentication modules ---
+from models import User, get_db
+from auth_utils import verify_password, get_password_hash, create_access_token, verify_token, generate_user_id
+from sqlalchemy.orm import Session
+from fastapi import Depends
+
 # --- Pydantic Models for Request/Response ---
 class ChatRequest(BaseModel):
     session_id: str
     user_input: str
+    user_token: str = None  # Optional token to get user persona
 
 class ChatResponse(BaseModel):
     session_id: str
@@ -115,6 +124,44 @@ class VoiceOutputRequest(BaseModel):
     # If using specific voice cloning, that might be handled differently or in a specific API.
     # For now, stick to predefined voices or direct voice tensor loading.
     kokoro_voice_name: str = "af_heart" # Default voice, check Kokoro docs for options (e.g., 'af_bella', 'am_adam')
+
+# --- Authentication Models ---
+class UserSignupRequest(BaseModel):
+    email: str
+    password: str
+    full_name: str
+    age: str
+    preferred_language: str
+    background: str
+    interests: List[str]
+    conversation_preferences: List[str]
+    technology_usage: str
+    conversation_goals: List[str]
+    additional_info: str = ""
+
+class UserLoginRequest(BaseModel):
+    email: str
+    password: str
+
+class UserResponse(BaseModel):
+    id: str
+    email: str
+    full_name: str
+    age: str
+    preferred_language: str
+    background: str
+    interests: List[str]
+    conversation_preferences: List[str]
+    technology_usage: str
+    conversation_goals: List[str]
+    additional_info: str
+    created_at: str
+    updated_at: str
+
+class TokenResponse(BaseModel):
+    access_token: str
+    token_type: str
+    user: UserResponse
 
 
 # --- Agent State Definition ---
@@ -172,21 +219,29 @@ async def startup_event():
     print(f"Initializing ChromaDB client at: {CHROMA_PERSIST_PATH}")
     try:
         chroma_client = chromadb.PersistentClient(path=CHROMA_PERSIST_PATH)
-        facts_collection = chroma_client.get_or_create_collection(name=FACTS_COLLECTION_NAME)
+        facts_collection = chroma_client.get_or_create_collection(
+            name=FACTS_COLLECTION_NAME, metadata={"hnsw:space": "cosine"}
+        )
+        if facts_collection is None:
+            raise ValueError(f"Failed to get or create ChromaDB collection: {FACTS_COLLECTION_NAME}")
         print(f"Fact collection '{FACTS_COLLECTION_NAME}' loaded/created. Initial count: {facts_collection.count()}")
-        summaries_collection = chroma_client.get_or_create_collection(name=SUMMARIES_COLLECTION_NAME)
+
+        summaries_collection = chroma_client.get_or_create_collection(
+            name=SUMMARIES_COLLECTION_NAME, metadata={"hnsw:space": "cosine"}
+        )
+        if summaries_collection is None:
+            raise ValueError(f"Failed to get or create ChromaDB collection: {SUMMARIES_COLLECTION_NAME}")
         print(f"Summaries collection '{SUMMARIES_COLLECTION_NAME}' loaded/created. Initial count: {summaries_collection.count()}")
     except Exception as e:
         print(f"CRITICAL Error initializing ChromaDB collections: {e}")
         raise RuntimeError(f"Failed to initialize ChromaDB: {e}")
 
-    print("Loading local Whisper model ('base' model)... This may take a moment.")
+    print("Loading local Whisper model ('small' model)... This may take a moment.")
     try:
-        whisper_model = whisper.load_model("base")
+        whisper_model = whisper.load_model("small")
         print("Whisper model loaded successfully.")
     except Exception as e:
         print(f"CRITICAL Error loading Whisper model: {e}")
-        print("Ensure 'ffmpeg' is installed and you have sufficient memory.")
         raise RuntimeError(f"Failed to load Whisper model: {e}")
 
     print("Loading Kokoro TTS model...")
@@ -194,31 +249,31 @@ async def startup_event():
         print("Kokoro TTS (KPipeline) class not found. TTS functionality will be unavailable.")
     else:
         try:
-            # Force Kokoro TTS to use CPU
-            kokoro_pipeline = KPipeline(lang_code=KOKORO_LANG_CODE, device="cpu") # <--- ADD device="cpu" HERE
-            print("Kokoro TTS model loaded successfully (on CPU).") # Added 'on CPU' for clarity
+            kokoro_pipeline = KPipeline(lang_code=KOKORO_LANG_CODE, device="cpu")
+            print("Kokoro TTS model loaded successfully (on CPU).")
         except Exception as e:
-            kokoro_pipeline = None # Ensure pipeline is None if loading fails
+            kokoro_pipeline = None
             print(f"CRITICAL Error loading Kokoro TTS model: {e}")
             print("Ensure `kokoro` Python package is installed and `espeak-ng` system dependency is met.")
             print(f"Detailed Kokoro load error: {e}")
             raise RuntimeError(f"Failed to load Kokoro TTS model: {e}")
 
-
     print("Compiling LangGraph app...")
     app_graph = get_compiled_app()
     print("LangGraph app compiled.")
 
+    # Minimal default persona - only used as fallback when no user token is provided
     user_persona_data = {
-        "name": "Aswin",
-        "age_group": "Elderly (70s)",
+        "name": "Guest User",
+        "age_group": "Unknown",
         "preferred_language": "English",
-        "background": "Retired history teacher, loves sharing stories from his past.",
-        "interests": ["history", "watching old movies", "woodworking", "cricket"],
-        "communication_style_preference": "respectful, enjoys a good chat, appreciates when his experiences are acknowledged.",
-        "technology_use": "Uses a tablet for news and games.",
-        "goals_with_agent": "discuss topics of interest, reminisce,to be a friend, get help finding information online, light-hearted conversation, feel understood and less lonely."
+        "background": "Guest user without personalized profile.",
+        "interests": [],
+        "communication_style_preference": "general conversation",
+        "technology_use": "Unknown",
+        "goals_with_agent": "general assistance and conversation"
     }
+    print("Minimal default persona loaded (fallback only).")
 
 # --- Helper Functions ---
 def format_messages_for_llm(messages: List[BaseMessage], max_history=10) -> str:
@@ -243,6 +298,32 @@ def format_persona_for_prompt(persona_data: Union[dict, str, None]) -> str:
         return formatted_persona
     return ""
 
+def get_user_persona_from_db(user_id: str, db: Session) -> dict:
+    """Get user persona data from database"""
+    try:
+        user = db.query(User).filter(User.id == user_id).first()
+        if not user:
+            return None
+        
+        # Convert user data to persona format
+        persona = {
+            "name": user.full_name,
+            "age_group": f"Age {user.age}",
+            "preferred_language": user.preferred_language,
+            "background": user.background,
+            "interests": json.loads(user.interests) if user.interests else [],
+            "communication_style_preference": ", ".join(json.loads(user.conversation_preferences)) if user.conversation_preferences else "",
+            "technology_use": user.technology_usage,
+            "goals_with_agent": ", ".join(json.loads(user.conversation_goals)) if user.conversation_goals else "",
+            "additional_info": user.additional_info
+        }
+        return persona
+    except Exception as e:
+        print(f"Error getting user persona from database: {e}")
+        return None
+
+
+import asyncio
 # --- Speech-to-Text with Local Whisper ---
 async def transcribe_audio_with_whisper(audio_file: UploadFile) -> str:
     global whisper_model
@@ -344,7 +425,6 @@ async def generate_speech_with_kokoro(text: str, voice_name: str) -> bytes:
             print("  Hint: The provided `voice_name` might be invalid. Check Kokoro documentation for available voices.")
         raise HTTPException(status_code=500, detail=f"Speech generation failed: {e}. Check Kokoro TTS setup, voice name, and `espeak-ng` installation.")
 
-
 # --- Agent Nodes ---
 
 def entry_node(state: AgentState) -> dict:
@@ -388,11 +468,12 @@ def fact_extraction_node(state: AgentState) -> dict:
             try:
                 fact_id = str(uuid.uuid4())
                 fact_embedding = embedding_model.embed_documents([extracted_fact])[0]
+                user_id = state.get("user_id") or ""
                 facts_collection.add(
                     ids=[fact_id],
                     embeddings=[fact_embedding],
                     documents=[extracted_fact],
-                    metadatas=[{"source": "user_statement", "turn": state.get("turn_count", 0)}]
+                    metadatas=[{"source": "user_statement", "turn": state.get("turn_count", 0), "user_id": user_id }]
                 )
                 print(f"  Fact added to ChromaDB (Collection: {FACTS_COLLECTION_NAME}) with ID: {fact_id}")
                 current_episodic_log = state.get("episodic_memory_session_log", [])
@@ -425,11 +506,12 @@ def assimilate_health_data_node(state: AgentState) -> dict:
             fact_ids = [str(uuid.uuid4()) for _ in facts_to_add]
             fact_embeddings = embedding_model.embed_documents(facts_to_add)
 
+            user_id = state.get("user_id") or ""
             facts_collection.add(
                 ids=fact_ids,
                 embeddings=fact_embeddings,
                 documents=facts_to_add,
-                metadatas=[{"source": "health_monitor", "date": today_str}] * len(facts_to_add)
+                metadatas=[{"source": "health_monitor", "date": today_str, "user_id": user_id}] * len(facts_to_add)
             )
             print(f"  Successfully added {len(facts_to_add)} health fact(s) to ChromaDB.")
             current_episodic_log = state.get("episodic_memory_session_log", [])
@@ -508,7 +590,8 @@ def retrieve_memory_node(state: AgentState) -> dict:
             fact_results = facts_collection.query(
                 query_embeddings=[query_embedding],
                 n_results=min(RETRIEVAL_K, facts_collection.count()),
-                include=["documents", "distances"]
+                include=["documents", "distances"],
+                where={"user_id": state.get("user_id")}
             )
             if fact_results and fact_results.get("documents") and fact_results["documents"][0]:
                 docs = fact_results["documents"][0]
@@ -518,10 +601,12 @@ def retrieve_memory_node(state: AgentState) -> dict:
                 print(f"  Retrieved {len(docs)} fact(s).")
 
         if summaries_collection and summaries_collection.count() > 0:
+            print("  >> Querying SUMMARY collection...")
             summary_results = summaries_collection.query(
                 query_embeddings=[query_embedding],
                 n_results=min(RETRIEVAL_K, summaries_collection.count()),
-                include=["documents", "distances"]
+                include=["documents", "distances"],
+                where={"user_id": state.get("user_id")}
             )
             if summary_results and summary_results.get("documents") and summary_results["documents"][0]:
                 docs = summary_results["documents"][0]
@@ -529,6 +614,7 @@ def retrieve_memory_node(state: AgentState) -> dict:
                 retrieved_summaries_str = "\n".join(f"- Summary: {doc} (Similarity Score: {1 - dist:.4f})" for doc, dist in zip(docs, dists))
                 retrieved_context_parts.append(f"Potentially relevant past conversation summaries:\n{retrieved_summaries_str}")
                 print(f"  Retrieved {len(docs)} summary(ies).")
+            
 
     except Exception as e:
         return {"retrieved_context": f"Error retrieving memories: {e}"}
@@ -559,33 +645,45 @@ def generate_response_node(state: AgentState) -> dict:
     retrieved_context_str = state.get("retrieved_context")
     health_alerts = state.get("health_alerts")
 
+    # --- FIX: Get user_name dynamically from the state ---
+    user_persona_data = state.get("user_persona", {})
+    user_name = user_persona_data.get("name", "the user")
+
     system_prompt_content = (
         f"You are the '{AGENT_NAME}', a kind, patient, and empathetic AI companion. "
         "Your primary role is to be a supportive and engaging conversational partner."
     )
-
-    user_persona_data = state.get("user_persona")
+    
     formatted_user_persona = format_persona_for_prompt(user_persona_data)
     if formatted_user_persona:
         system_prompt_content += f"\n\n--- User Information ---\n{formatted_user_persona}"
 
     turn_specific_task = ""
     if retrieved_context_str:
-        print("  >> Entering Focused Question-Answering Mode.")
+        print("  >> Entering Persona-Aware Question-Answering Mode.")
         qa_prompt = (
-            "You are a Question-Answering engine. Your sole task is to answer the user's question based on the provided 'Context'.\n"
-            "1. Analyze the user's question.\n"
-            "2. Find the specific answer within the 'Context'.\n"
-            "3. State the answer clearly and concisely, starting with a phrase like 'Based on my notes...' or 'I found that...'.\n"
-            "4. If the context does not contain the answer, state 'I couldn't find a specific answer to your question in my notes.'\n"
-            "5. Do not add any conversational fluff or use information outside the provided 'Context'.\n\n"
-            f"--- Context ---\n{retrieved_context_str}\n----------------"
+            f"You are the '{AGENT_NAME}', a helpful and kind AI companion. You are speaking directly to your friend, {user_name}.\n\n"
+            "**Your Task:**\n"
+            f"You need to answer {user_name}'s question. The 'Context' below is **your own memory** - it contains facts you have learned about them in the past. Read their question, find the answer in your memory, and respond to them naturally in the first person ('I').\n\n"
+            "**Rules:**\n"
+            "1.  **Speak as 'I'.** For example, if the context says 'User is a history teacher', and the user asks 'what was my job?', you should answer 'I remember you telling me you were a history teacher.'\n"
+            "2.  **Address them as 'you'.**\n"
+            "3.  **Do not say 'based on the context' or refer to 'the user' in your response.** Treat the context as your own knowledge.\n"
+            "4.  If the answer isn't in your memory, say something natural like 'I don't seem to recall that, I'm sorry.'\n\n"
+            "--- CONTEXT (YOUR MEMORY) ---\n"
+            f"{retrieved_context_str}\n"
+            "---------------------------\n\n"
+            f"--- {user_name.upper()}'S QUESTION ---\n"
+            f"{user_input}\n"
+            "------------------------\n\n"
+            f"**YOUR RESPONSE TO {user_name.upper()}:**"
         )
+        # --- FIX: The prompt_parts for QA mode should only contain the system message ---
         prompt_parts = [
-            SystemMessage(content=qa_prompt),
-            HumanMessage(content=user_input)
+            SystemMessage(content=qa_prompt)
         ]
     else:
+        # This is for all other conversational modes.
         print("  >> Entering General Conversational Mode.")
         if health_alerts:
             alerts_str = "\n- ".join(health_alerts)
@@ -597,11 +695,19 @@ def generate_response_node(state: AgentState) -> dict:
                 f"{alerts_str}"
             )
         elif tool_result:
-            turn_specific_task = (
-                "Your mission is to report the result of the tool you just used. "
-                "Convey this information clearly and conversationally to the user.\n"
-                f"Tool Result: '{tool_result}'"
-            )
+            if "error" in tool_result.lower() or "failed" in tool_result.lower():
+                turn_specific_task = (
+                    "Your mission is to apologize and explain that a technical problem occurred. "
+                    "Tell the user that you failed to complete the action due to a technical error with one of your tools (like the calendar tool). "
+                    "Do not show them the raw error message. Just say something went wrong and you can't do it right now."
+                )
+            else:
+                turn_specific_task = (
+                    "Your mission is to confirm to the user that you have completed their request. "
+                    "Speak naturally, as if you did it yourself. Do NOT mention a 'tool'.\n"
+                    "For example, instead of 'The tool succeeded', say 'Okay, I've scheduled that for you.'\n\n"
+                    f"Information to convey: '{tool_result}'"
+                )
         else:
             turn_specific_task = (
                 "Your mission is to be a good listener and conversational partner. "
@@ -609,7 +715,7 @@ def generate_response_node(state: AgentState) -> dict:
             )
 
         system_prompt_content += f"\n\n--- YOUR MISSION FOR THIS TURN ---\n{turn_specific_task}"
-
+        
         prompt_parts = [SystemMessage(content=system_prompt_content.strip())]
         prompt_parts.extend(state["messages"])
         prompt_parts.append(HumanMessage(content=user_input))
@@ -658,11 +764,12 @@ def check_and_summarize_node(state: AgentState) -> dict:
                 try:
                     summary_id = str(uuid.uuid4())
                     summary_embedding = embedding_model.embed_documents([summary])[0]
+                    user_id = state.get("user_id") or ""
                     summaries_collection.add(
                         ids=[summary_id],
                         embeddings=[summary_embedding],
                         documents=[summary],
-                        metadatas=[{"source": "conversation_summary", "turn": turn_count}]
+                        metadatas=[{"source": "conversation_summary", "turn": turn_count, "user_id": user_id }]
                     )
                     print(f"  Summary added to ChromaDB (Collection: {SUMMARIES_COLLECTION_NAME}) with ID: {summary_id}")
                     current_ltm_log = state.get("long_term_memory_session_log", [])
@@ -724,10 +831,14 @@ def get_compiled_app():
     return _app
 
 # --- Helper Functions to Fetch Chroma Data for Display ---
-def get_chroma_facts_for_display(limit=10):
+def get_chroma_facts_for_display(user_id, limit=10):
     if facts_collection and facts_collection.count() > 0:
         try:
-            results = facts_collection.get(limit=min(limit, facts_collection.count()), include=["documents", "metadatas"])
+            results = facts_collection.get(
+                where={"user_id": user_id},
+                limit=min(limit, facts_collection.count()),
+                include=["documents", "metadatas"]
+            )
             serializable_metadatas = [dict(m) if m is not None else {} for m in results.get("metadatas", [])]
             return {"documents": results.get("documents", []), "metadatas": serializable_metadatas}
         except Exception as e:
@@ -735,10 +846,14 @@ def get_chroma_facts_for_display(limit=10):
             return {"documents": [f"Error fetching facts: {e}"], "metadatas":[{}]}
     return {"documents": [], "metadatas":[]}
 
-def get_chroma_summaries_for_display(limit=10):
+def get_chroma_summaries_for_display(user_id, limit=10):
     if summaries_collection and summaries_collection.count() > 0:
         try:
-            results = summaries_collection.get(limit=min(limit, summaries_collection.count()), include=["documents", "metadatas"])
+            results = summaries_collection.get(
+                where={"user_id": user_id},
+                limit=min(limit, summaries_collection.count()),
+                include=["documents", "metadatas"]
+            )
             serializable_metadatas = [dict(m) if m is not None else {} for m in results.get("metadatas", [])]
             return {"documents": results.get("documents", []), "metadatas":serializable_metadatas}
         except Exception as e:
@@ -749,26 +864,45 @@ def get_chroma_summaries_for_display(limit=10):
 # --- API Endpoints ---
 
 @app.post("/chat", response_model=ChatResponse)
-async def chat_endpoint(request: ChatRequest):
+async def chat_endpoint(request: ChatRequest, db: Session = Depends(get_db)):
     session_id = request.session_id
     user_input = request.user_input
+    user_token = request.user_token
+
+    user_id = None
+    # Get user persona from database if token is provided
+    user_persona = user_persona_data  # Default fallback
+    if user_token:
+        try:
+            payload = verify_token(user_token)
+            if payload and payload.get("user_id"):
+                user_id = payload["user_id"]
+                user_persona = get_user_persona_from_db(user_id, db)
+                if user_persona:
+                    print(f"Loaded user persona for user {user_id}")
+                else:
+                    print(f"Could not load user persona, using default")
+        except Exception as e:
+            print(f"Error loading user persona: {e}")
 
     if session_id not in session_states:
         session_states[session_id] = {
             "messages": [],
             "long_term_memory_session_log": [],
             "episodic_memory_session_log": [],
-            "user_persona": user_persona_data,
+            "user_persona": user_persona,
             "user_input": "",
             "turn_count": 0,
             "router_decision": "",
             "retrieved_context": "",
             "tool_result": None,
-            "health_alerts": None
+            "health_alerts": None,
+            "user_id": user_id
         }
 
     current_graph_input_state = session_states[session_id].copy()
     current_graph_input_state["user_input"] = user_input
+    current_graph_input_state["user_id"] = user_id
 
     print("--- Checking Health Data (Live from FastAPI endpoint) ---")
     live_health_alerts = check_health_data()
@@ -798,33 +932,21 @@ async def chat_endpoint(request: ChatRequest):
         print(f"Error invoking agent for session {session_id}: {e}")
         raise HTTPException(status_code=500, detail=f"Internal Server Error: {e}")
 
-@app.post("/chat_voice", response_model=ChatResponse)
-async def chat_voice_endpoint(
-    session_id: Annotated[str, Form()],
-    audio_file: Annotated[UploadFile, File()],
-):
-    print(f"Received voice input for session: {session_id}")
-    transcribed_text = None
+@app.post("/transcribe_audio")
+async def transcribe_audio_endpoint(audio_file: UploadFile = File(...)):
+    """Transcribe audio and return only the text."""
     try:
         transcribed_text = await transcribe_audio_with_whisper(audio_file)
-        print(f"Transcribed text: '{transcribed_text}'")
-    except HTTPException as e:
-        print(f"Transcription error: {e.detail}")
-        transcribed_text = f"Error transcribing audio: {e.detail}"
+        return {"transcribed_text": transcribed_text}
+    except Exception as e:
+        print(f"Transcription error: {e}")
+        raise HTTPException(status_code=500, detail=f"Audio transcription failed: {e}")
 
-    # Only transcribe, don't process through agent
-    return ChatResponse(
-        session_id=session_id,
-        ai_response="",  # Empty since we're not processing
-        episodic_memory_log=[],
-        long_term_memory_log=[],
-        current_router_decision="",
-        retrieved_context_for_turn="",
-        health_alerts_for_turn=[],
-        transcribed_text=transcribed_text
-    )
+# Optionally, you can deprecate or remove the /chat_voice endpoint:
+# @app.post("/chat_voice")
+# async def chat_voice_endpoint(...):
+#     raise HTTPException(status_code=410, detail="/chat_voice is deprecated. Use /transcribe_audio and /chat.")
 
-# Re-adding /speak_response endpoint
 @app.post("/speak_response")
 async def speak_response_endpoint(request: VoiceOutputRequest):
     """
@@ -864,9 +986,11 @@ async def reset_session_endpoint(request: ResetRequest):
 async def get_memories_endpoint(session_id: str, limit: int = 10):
     if session_id not in session_states:
         raise HTTPException(status_code=404, detail=f"Session {session_id} not found.")
-
-    facts_data = get_chroma_facts_for_display(limit=limit)
-    summaries_data = get_chroma_summaries_for_display(limit=limit)
+    user_id = session_states[session_id].get("user_id")
+    if not user_id:
+        raise HTTPException(status_code=400, detail="No user_id found in session. Please log in again.")
+    facts_data = get_chroma_facts_for_display(user_id, limit=limit)
+    summaries_data = get_chroma_summaries_for_display(user_id, limit=limit)
 
     formatted_facts = []
     for doc, meta in zip(facts_data["documents"], facts_data["metadatas"]):
@@ -885,6 +1009,321 @@ async def get_profile_endpoint(session_id: str):
     else:
         persona = user_persona_data
     return JSONResponse(content={"user_persona": persona})
+
+@app.get("/get_health_data")
+def get_health_data():
+    data = get_health_from_file()
+    return JSONResponse(content=data)
+
+# --- Authentication Endpoints ---
+
+@app.post("/auth/signup", response_model=TokenResponse)
+async def signup(request: UserSignupRequest, db: Session = Depends(get_db)):
+    """Register a new user"""
+    try:
+        print(f"Signup request received: {request.email}")
+        
+        # Check if user already exists
+        existing_user = db.query(User).filter(User.email == request.email).first()
+        if existing_user:
+            print(f"Email already registered: {request.email}")
+            raise HTTPException(status_code=400, detail="Email already registered")
+        
+        # Create new user
+        user_id = generate_user_id()
+        hashed_password = get_password_hash(request.password)
+        
+        print(f"Creating user with ID: {user_id}")
+        
+        new_user = User(
+            id=user_id,
+            email=request.email,
+            password_hash=hashed_password,
+            full_name=request.full_name,
+            age=request.age,
+            preferred_language=request.preferred_language,
+            background=request.background,
+            interests=json.dumps(request.interests),
+            conversation_preferences=json.dumps(request.conversation_preferences),
+            technology_usage=request.technology_usage,
+            conversation_goals=json.dumps(request.conversation_goals),
+            additional_info=request.additional_info
+        )
+        
+        db.add(new_user)
+        db.commit()
+        db.refresh(new_user)
+
+        print(f"User created successfully: {new_user.email}")
+
+        # --- Add user profile facts to ChromaDB ---
+        try:
+            profile_facts = []
+            if new_user.full_name:
+                profile_facts.append(f"User's full name is {new_user.full_name}.")
+            if new_user.age:
+                profile_facts.append(f"User's age is {new_user.age}.")
+            if new_user.preferred_language:
+                profile_facts.append(f"User's preferred language is {new_user.preferred_language}.")
+            if new_user.background:
+                profile_facts.append(f"User's background: {new_user.background}.")
+            if new_user.interests:
+                try:
+                    interests = json.loads(new_user.interests)
+                    if interests:
+                        profile_facts.append(f"User's interests: {', '.join(interests)}.")
+                except Exception:
+                    pass
+            if new_user.conversation_preferences:
+                try:
+                    prefs = json.loads(new_user.conversation_preferences)
+                    if prefs:
+                        profile_facts.append(f"User's conversation preferences: {', '.join(prefs)}.")
+                except Exception:
+                    pass
+            if new_user.technology_usage:
+                profile_facts.append(f"User's technology usage: {new_user.technology_usage}.")
+            if new_user.conversation_goals:
+                try:
+                    goals = json.loads(new_user.conversation_goals)
+                    if goals:
+                        profile_facts.append(f"User's conversation goals: {', '.join(goals)}.")
+                except Exception:
+                    pass
+            if new_user.additional_info:
+                profile_facts.append(f"Additional info: {new_user.additional_info}.")
+            if facts_collection and profile_facts:
+                fact_ids = [str(uuid.uuid4()) for _ in profile_facts]
+                fact_embeddings = embedding_model.embed_documents(profile_facts)
+                facts_collection.add(
+                    ids=fact_ids,
+                    embeddings=fact_embeddings,
+                    documents=profile_facts,
+                    metadatas=[{"source": "user_profile", "user_id": new_user.id}] * len(profile_facts)
+                )
+                print(f"Added {len(profile_facts)} user profile facts to ChromaDB.")
+        except Exception as e:
+            print(f"Error adding user profile facts to ChromaDB: {e}")
+
+        # Create access token
+        access_token = create_access_token(
+            data={"sub": new_user.email, "user_id": new_user.id}
+        )
+        
+        return TokenResponse(
+            access_token=access_token,
+            token_type="bearer",
+            user=UserResponse(**new_user.to_dict())
+        )
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        db.rollback()
+        print(f"Signup error: {e}")
+        print(f"Error type: {type(e)}")
+        import traceback
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=f"Internal server error: {str(e)}")
+
+@app.post("/auth/login", response_model=TokenResponse)
+async def login(request: UserLoginRequest, db: Session = Depends(get_db)):
+    """Authenticate user and return access token"""
+    try:
+        print(f"Login request received: {request.email}")
+        
+        # Find user by email
+        user = db.query(User).filter(User.email == request.email).first()
+        if not user:
+            print(f"User not found: {request.email}")
+            raise HTTPException(status_code=401, detail="Invalid email or password")
+        
+        print(f"User found: {user.email}")
+        
+        # Verify password
+        if not verify_password(request.password, user.password_hash):
+            print(f"Password verification failed for: {request.email}")
+            raise HTTPException(status_code=401, detail="Invalid email or password")
+        
+        print(f"Password verified successfully for: {request.email}")
+
+        # Ensure user profile facts exist in ChromaDB
+        try:
+            # Check if any facts exist for this user
+            existing_facts = facts_collection.get(where={"user_id": user.id}, limit=1, include=["documents"])
+            if not existing_facts.get("documents") or len(existing_facts["documents"]) == 0:
+                print(f"No profile facts found in ChromaDB for user {user.id}, adding from DB.")
+                profile_facts = []
+                if user.full_name:
+                    profile_facts.append(f"User's full name is {user.full_name}.")
+                if user.age:
+                    profile_facts.append(f"User's age is {user.age}.")
+                if user.preferred_language:
+                    profile_facts.append(f"User's preferred language is {user.preferred_language}.")
+                if user.background:
+                    profile_facts.append(f"User's background: {user.background}.")
+                if user.interests:
+                    try:
+                        interests = json.loads(user.interests)
+                        if interests:
+                            profile_facts.append(f"User's interests: {', '.join(interests)}.")
+                    except Exception:
+                        pass
+                if user.conversation_preferences:
+                    try:
+                        prefs = json.loads(user.conversation_preferences)
+                        if prefs:
+                            profile_facts.append(f"User's conversation preferences: {', '.join(prefs)}.")
+                    except Exception:
+                        pass
+                if user.technology_usage:
+                    profile_facts.append(f"User's technology usage: {user.technology_usage}.")
+                if user.conversation_goals:
+                    try:
+                        goals = json.loads(user.conversation_goals)
+                        if goals:
+                            profile_facts.append(f"User's conversation goals: {', '.join(goals)}.")
+                    except Exception:
+                        pass
+                if user.additional_info:
+                    profile_facts.append(f"Additional info: {user.additional_info}.")
+                if facts_collection and profile_facts:
+                    fact_ids = [str(uuid.uuid4()) for _ in profile_facts]
+                    fact_embeddings = embedding_model.embed_documents(profile_facts)
+                    facts_collection.add(
+                        ids=fact_ids,
+                        embeddings=fact_embeddings,
+                        documents=profile_facts,
+                        metadatas=[{"source": "user_profile", "user_id": user.id}] * len(profile_facts)
+                    )
+                    print(f"Added {len(profile_facts)} user profile facts to ChromaDB on login.")
+        except Exception as e:
+            print(f"Error ensuring user profile facts in ChromaDB on login: {e}")
+
+        # Create access token
+        access_token = create_access_token(
+            data={"sub": user.email, "user_id": user.id}
+        )
+
+        # Initialize session_states for this user session (if not already present)
+        session_id = str(user.id)  # Use user.id as session_id for login context
+        if session_id not in session_states:
+            session_states[session_id] = {
+                "messages": [],
+                "long_term_memory_session_log": [],
+                "episodic_memory_session_log": [],
+                "user_persona": user.to_dict(),
+                "user_input": "",
+                "turn_count": 0,
+                "router_decision": "",
+                "retrieved_context": "",
+                "tool_result": None,
+                "health_alerts": None,
+                "user_id": user.id
+            }
+
+        return TokenResponse(
+            access_token=access_token,
+            token_type="bearer",
+            user=UserResponse(**user.to_dict())
+        )
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Login error: {e}")
+        print(f"Error type: {type(e)}")
+        import traceback
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=f"Internal server error: {str(e)}")
+
+@app.get("/auth/me", response_model=UserResponse)
+async def get_current_user(token: str, db: Session = Depends(get_db)):
+    """Get current user information"""
+    try:
+        # Verify token
+        payload = verify_token(token)
+        if not payload:
+            raise HTTPException(status_code=401, detail="Invalid token")
+        
+        user_id = payload.get("user_id")
+        if not user_id:
+            raise HTTPException(status_code=401, detail="Invalid token")
+        
+        # Get user from database
+        user = db.query(User).filter(User.id == user_id).first()
+        if not user:
+            raise HTTPException(status_code=404, detail="User not found")
+        
+        return UserResponse(**user.to_dict())
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Get user error: {e}")
+        raise HTTPException(status_code=500, detail="Internal server error")
+
+@app.put("/auth/update-profile", response_model=UserResponse)
+async def update_user_profile(
+    token: str,
+    full_name: str = None,
+    age: str = None,
+    preferred_language: str = None,
+    background: str = None,
+    interests: List[str] = None,
+    conversation_preferences: List[str] = None,
+    technology_usage: str = None,
+    conversation_goals: List[str] = None,
+    additional_info: str = None,
+    db: Session = Depends(get_db)
+):
+    """Update user profile information"""
+    try:
+        # Verify token
+        payload = verify_token(token)
+        if not payload:
+            raise HTTPException(status_code=401, detail="Invalid token")
+        
+        user_id = payload.get("user_id")
+        if not user_id:
+            raise HTTPException(status_code=401, detail="Invalid token")
+        
+        # Get user from database
+        user = db.query(User).filter(User.id == user_id).first()
+        if not user:
+            raise HTTPException(status_code=404, detail="User not found")
+        
+        # Update fields if provided
+        if full_name is not None:
+            user.full_name = full_name
+        if age is not None:
+            user.age = age
+        if preferred_language is not None:
+            user.preferred_language = preferred_language
+        if background is not None:
+            user.background = background
+        if interests is not None:
+            user.interests = json.dumps(interests)
+        if conversation_preferences is not None:
+            user.conversation_preferences = json.dumps(conversation_preferences)
+        if technology_usage is not None:
+            user.technology_usage = technology_usage
+        if conversation_goals is not None:
+            user.conversation_goals = json.dumps(conversation_goals)
+        if additional_info is not None:
+            user.additional_info = additional_info
+        
+        db.commit()
+        db.refresh(user)
+        
+        return UserResponse(**user.to_dict())
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        db.rollback()
+        print(f"Update profile error: {e}")
+        raise HTTPException(status_code=500, detail="Internal server error")
 
 if __name__ == "__main__":
     uvicorn.run(app, host="0.0.0.0", port=8000)

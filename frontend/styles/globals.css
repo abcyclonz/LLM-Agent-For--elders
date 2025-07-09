@@ -6,6 +6,10 @@ body {
   font-family: Arial, Helvetica, sans-serif;
 }
 
+body[data-has-nav='true'] {
+  padding-top: 4rem; /* pt-16 */
+}
+
 @layer utilities {
   .text-balance {
     text-wrap: balance;
@@ -52,17 +56,17 @@ body {
   .dark {
     --background: 0 0% 0% !important;
     --foreground: 0 0% 98% !important;
-    --card: 0 0% 2% !important;
+    --card: 0 0% 0% !important;
     --card-foreground: 0 0% 98% !important;
-    --popover: 0 0% 2% !important;
+    --popover: 0 0% 0% !important;
     --popover-foreground: 0 0% 98% !important;
     --primary: 0 0% 98% !important;
     --primary-foreground: 0 0% 9% !important;
-    --secondary: 0 0% 8% !important;
+    --secondary: 0 0% 0% !important;
     --secondary-foreground: 0 0% 98% !important;
-    --muted: 0 0% 8% !important;
+    --muted: 0 0% 0% !important;
     --muted-foreground: 0 0% 63.9% !important;
-    --accent: 0 0% 8% !important;
+    --accent: 0 0% 0% !important;
     --accent-foreground: 0 0% 98% !important;
     --destructive: 0 62.8% 30.6% !important;
     --destructive-foreground: 0 0% 98% !important;
@@ -74,11 +78,11 @@ body {
     --chart-3: 30 80% 55% !important;
     --chart-4: 280 65% 60% !important;
     --chart-5: 340 75% 55% !important;
-    --sidebar-background: 0 0% 4% !important;
+    --sidebar-background: 0 0% 0% !important;
     --sidebar-foreground: 240 4.8% 95.9% !important;
     --sidebar-primary: 224.3 76.3% 48% !important;
     --sidebar-primary-foreground: 0 0% 100% !important;
-    --sidebar-accent: 0 0% 6% !important;
+    --sidebar-accent: 0 0% 0% !important;
     --sidebar-accent-foreground: 240 4.8% 95.9% !important;
     --sidebar-border: 0 0% 6% !important;
     --sidebar-ring: 217.2 91.2% 59.8% !important;
@@ -115,23 +119,23 @@ body {
   }
   
   .dark .bg-card {
-    background-color: #050505 !important;
+    background-color: #000000 !important;
   }
   
   .dark .bg-popover {
-    background-color: #050505 !important;
+    background-color: #000000 !important;
   }
   
   .dark .bg-secondary {
-    background-color: #141414 !important;
+    background-color: #000000 !important;
   }
   
   .dark .bg-muted {
-    background-color: #141414 !important;
+    background-color: #000000 !important;
   }
   
   .dark .bg-accent {
-    background-color: #141414 !important;
+    background-color: #000000 !important;
   }
   
   .dark .border-border {

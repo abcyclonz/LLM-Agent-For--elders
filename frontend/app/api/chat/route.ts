@@ -12,9 +12,13 @@ export async function POST(req: Request) {
       return NextResponse.json({ error: "No messages provided" }, { status: 400 });
     }
 
+    // Get user token from localStorage (this will be passed from the frontend)
+    const userToken = agentState?.userToken || null;
+
     const payload = {
       session_id: agentState?.sessionId || "frontend-session",
       user_input: messages[messages.length - 1]?.content || "",
+      user_token: userToken,
     };
     console.log("Sending to backend:", payload);
 
