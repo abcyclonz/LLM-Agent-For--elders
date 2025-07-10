@@ -1,0 +1,24 @@
+# --- Core Frameworks & UI ---
+streamlit==1.35.0
+langchain==0.1.20
+langgraph==0.0.48
+
+# --- LangChain Integrations ---
+langchain-core==0.1.52
+langchain-ollama==0.1.9
+langchain-huggingface==0.0.3
+
+# --- Vector Database & Embeddings ---
+# Pinned to a known stable version to avoid SQLAlchemy conflicts
+chromadb==0.4.24
+sentence-transformers==2.7.0
+
+# --- Tooling & Utilities ---
+dateparser==1.2.0
+google-api-python-client==2.130.0
+google-auth-oauthlib==1.2.1
+google-auth-httplib2==0.2.0
+
+# --- Explicitly Pinned Dependency to Force Resolution ---
+# This is the key: we are forcing the exact version that works with the above.
+SQLAlchemy==1.4.49

@@ -1,0 +1,304 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  :root {
+    --background: 0 0% 100%;
+    --foreground: 222.2 84% 4.9%;
+    --card: 0 0% 100%;
+    --card-foreground: 222.2 84% 4.9%;
+    --popover: 0 0% 100%;
+    --popover-foreground: 222.2 84% 4.9%;
+    --primary: 221.2 83.2% 53.3%;
+    --primary-foreground: 210 40% 98%;
+    --secondary: 210 40% 96%;
+    --secondary-foreground: 222.2 84% 4.9%;
+    --muted: 210 40% 96%;
+    --muted-foreground: 215.4 16.3% 46.9%;
+    --accent: 210 40% 96%;
+    --accent-foreground: 222.2 84% 4.9%;
+    --destructive: 0 84.2% 60.2%;
+    --destructive-foreground: 210 40% 98%;
+    --border: 214.3 31.8% 91.4%;
+    --input: 214.3 31.8% 91.4%;
+    --ring: 221.2 83.2% 53.3%;
+    --radius: 0.5rem;
+  }
+
+  .dark {
+    /* Ultra-deep, rich black for background and primary surfaces */
+    --background: 240 10% 2.5%;   /* Even closer to pure black, with a subtle blue tint */
+    --foreground: 210 40% 98%;   /* Keep foreground light for good contrast */
+  
+    --card: 240 10% 2.5%;        /* Match background for seamlessness */
+    --card-foreground: 210 40% 98%;
+  
+    --popover: 240 10% 2.5%;
+    --popover-foreground: 210 40% 98%;
+  
+    /* Adjust primary for a deeper, perhaps slightly desaturated, but still vibrant blue */
+    --primary: 217.2 91.2% 40%;  /* Slightly darker primary color */
+    --primary-foreground: 210 40% 98%; /* Keep primary foreground light */
+  
+    /* Secondary and muted colors should also be darker, less grey, more black-ish */
+    --secondary: 240 8% 5%;      /* Very dark secondary, almost black */
+    --secondary-foreground: 210 40% 98%;
+  
+    --muted: 240 8% 5%;
+    --muted-foreground: 215 15% 45%; /* Slightly darker muted foreground for better contrast */
+  
+    --accent: 240 8% 5%;
+    --accent-foreground: 210 40% 98%;
+  
+    --destructive: 0 62.8% 25%;  /* Make destructive slightly darker too for consistency */
+    --destructive-foreground: 210 40% 98%;
+  
+    /* Borders and inputs should also reflect the darker aesthetic */
+    --border: 240 8% 8%;         /* Darker border, subtly lighter than background for definition */
+    --input: 240 8% 5%;          /* Very dark input field */
+  
+    --ring: 217.2 91.2% 40%;     /* Ring can match primary or be a slightly lighter accent of the primary */
+  }
+}
+
+@layer base {
+  * {
+    @apply border-border;
+  }
+  body {
+    @apply bg-background text-foreground;
+  }
+}
+
+/* Smooth Animation Utilities */
+@layer utilities {
+  .animate-smooth-fade-in {
+    animation: smoothFadeIn 0.6s cubic-bezier(0.4, 0, 0.2, 1) forwards;
+  }
+  
+  .animate-smooth-slide-up {
+    animation: smoothSlideUp 0.5s cubic-bezier(0.4, 0, 0.2, 1) forwards;
+  }
+  
+  .animate-smooth-slide-down {
+    animation: smoothSlideDown 0.5s cubic-bezier(0.4, 0, 0.2, 1) forwards;
+  }
+  
+  .animate-smooth-scale {
+    animation: smoothScale 0.3s cubic-bezier(0.4, 0, 0.2, 1) forwards;
+  }
+  
+  .animate-smooth-bounce {
+    animation: smoothBounce 0.6s cubic-bezier(0.68, -0.55, 0.265, 1.55) forwards;
+  }
+  
+  .animate-smooth-pulse {
+    animation: smoothPulse 2s cubic-bezier(0.4, 0, 0.6, 1) infinite;
+  }
+  
+  .animate-smooth-float {
+    animation: smoothFloat 3s ease-in-out infinite;
+  }
+  
+  .transition-smooth {
+    transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+  }
+  
+  .transition-smooth-fast {
+    transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
+  }
+  
+  .transition-smooth-slow {
+    transition: all 0.5s cubic-bezier(0.4, 0, 0.2, 1);
+  }
+  
+  .hover-smooth {
+    transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+  }
+  
+  .hover-smooth:hover {
+    transform: translateY(-2px);
+    box-shadow: 0 10px 25px -5px rgba(0, 0, 0, 0.1), 0 10px 10px -5px rgba(0, 0, 0, 0.04);
+  }
+}
+
+/* Custom Keyframe Animations */
+@keyframes smoothFadeIn {
+  from {
+    opacity: 0;
+    transform: translateY(10px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@keyframes smoothSlideUp {
+  from {
+    opacity: 0;
+    transform: translateY(20px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@keyframes smoothSlideDown {
+  from {
+    opacity: 0;
+    transform: translateY(-20px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@keyframes smoothScale {
+  from {
+    opacity: 0;
+    transform: scale(0.95);
+  }
+  to {
+    opacity: 1;
+    transform: scale(1);
+  }
+}
+
+@keyframes smoothBounce {
+  0% {
+    opacity: 0;
+    transform: scale(0.3);
+  }
+  50% {
+    opacity: 1;
+    transform: scale(1.05);
+  }
+  70% {
+    transform: scale(0.9);
+  }
+  100% {
+    opacity: 1;
+    transform: scale(1);
+  }
+}
+
+@keyframes smoothPulse {
+  0%, 100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.5;
+  }
+}
+
+@keyframes smoothFloat {
+  0%, 100% {
+    transform: translateY(0px);
+  }
+  50% {
+    transform: translateY(-10px);
+  }
+}
+
+@keyframes processingWave {
+  0%, 100% {
+    transform: scaleY(0.3);
+    opacity: 0.4;
+  }
+  50% {
+    transform: scaleY(1);
+    opacity: 1;
+  }
+}
+
+/* Smooth scrollbar */
+@layer utilities {
+  .scrollbar-smooth {
+    scrollbar-width: thin;
+    scrollbar-color: hsl(var(--muted-foreground) / 0.3) transparent;
+  }
+  
+  .scrollbar-smooth::-webkit-scrollbar {
+    width: 6px;
+  }
+  
+  .scrollbar-smooth::-webkit-scrollbar-track {
+    background: transparent;
+  }
+  
+  .scrollbar-smooth::-webkit-scrollbar-thumb {
+    background-color: hsl(var(--muted-foreground) / 0.3);
+    border-radius: 3px;
+    transition: background-color 0.3s ease;
+  }
+  
+  .scrollbar-smooth::-webkit-scrollbar-thumb:hover {
+    background-color: hsl(var(--muted-foreground) / 0.5);
+  }
+}
+
+/* Smooth focus states */
+@layer base {
+  *:focus-visible {
+    outline: 2px solid hsl(var(--ring));
+    outline-offset: 2px;
+    transition: outline 0.2s ease;
+  }
+  
+  button:focus-visible,
+  input:focus-visible,
+  textarea:focus-visible {
+    outline: 2px solid hsl(var(--ring));
+    outline-offset: 2px;
+  }
+}
+
+@keyframes subtabEaseIn {
+  from {
+    opacity: 0;
+    transform: translateY(40px) scale(0.98);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}
+
+.animate-subtab-ease-in {
+  animation: subtabEaseIn 0.5s cubic-bezier(0.33, 0.01, 0, 1) forwards;
+}
+
+@keyframes subtabSlideInEnd {
+  from {
+    opacity: 0;
+    transform: translateX(60px) scale(0.98);
+  }
+  to {
+    opacity: 1;
+    transform: translateX(0) scale(1);
+  }
+}
+
+.animate-subtab-slide-in-end {
+  animation: subtabSlideInEnd 0.5s cubic-bezier(0.33, 0.01, 0, 1) forwards;
+}
+
+.main-content-push {
+  transition: transform 0.5s cubic-bezier(0.33, 0.01, 0, 1);
+  will-change: transform;
+}
+.main-content-push-active {
+  transform: translateX(-320px);
+}
+
+.main-content-compress {
+  transition: width 0.5s cubic-bezier(0.33, 0.01, 0, 1);
+  width: 100%;
+}
+.main-content-compress-active {
+  width: calc(100% - 20rem);
+}

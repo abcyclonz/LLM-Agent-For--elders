@@ -1,0 +1,53 @@
+# Core FastAPI and Web Server
+fastapi==0.115.12 # Aligned with your list
+uvicorn==0.34.1 # Aligned with your list
+aiofiles==23.2.1 # Aligned with your list
+python-multipart==0.0.20 # Aligned with your list
+uvloop==0.21.0 # Aligned with your list (often included with uvicorn[standard])
+
+# LLM & Agent Frameworks
+langgraph==0.5.1 # Aligned with your list
+langchain-core==0.3.68 # Aligned with your list
+langchain-ollama==0.3.3 # Aligned with your list
+langchain-huggingface==0.3.0 # Aligned with your list
+langchain-text-splitters==0.3.8 # Aligned with your list (likely a transitive dependency)
+langchain==0.3.26 # If you specifically use the top-level langchain package, include it.
+langsmith==0.4.4 # Aligned with your list (often used for observability with LangChain/LangGraph)
+
+# Embeddings & Vector Database
+huggingface-hub==0.33.2 # Aligned with your list
+chromadb==1.0.15 # Aligned with your list
+
+# Speech-to-Text (STT)
+openai-whisper==20240930 # Aligned with your list
+numpy==1.26.4 # Aligned with your list
+torch==2.6.0 # CRITICAL: This implies CUDA 12.4 (from torchvision 0.21.0+cu124)
+torchaudio==2.6.0 # CRITICAL: This must match your torch version
+
+# Text-to-Speech (TTS)
+kokoro==0.9.4 # Aligned with your list (and still requires espeak-ng system dependency)
+
+# Database & Authentication
+sqlalchemy==2.0.40 # Aligned with your list
+passlib==1.7.4 # Aligned with your list (needs bcrypt for argon2 hashing)
+python-jose==3.5.0 # Aligned with your list
+bcrypt==4.3.0 # Aligned with your list
+email_validator==2.2.0 # Aligned with your list
+greenlet==3.2.1 # Aligned with your list
+
+# Utility & General Dependencies
+pydantic==2.10.6 # Aligned with your list
+pydantic-core==2.27.2 # Aligned with your list
+typing-extensions==4.12.2 # Aligned with your list
+pandas==1.5.3 # Aligned with your list (your health_monitor_tool.py imports it)
+python-dotenv==1.1.0 # Aligned with your list
+
+# Google API Client (for calendar_tool.py, confirmed by your list)
+google-api-core==2.24.2 # Aligned with your list
+google-api-python-client==2.175.0 # Aligned with your list
+google-auth==2.39.0 # Aligned with your list
+google-auth-httplib2==0.2.0 # Aligned with your list
+google-auth-oauthlib==0.4.6 # Aligned with your list
+httplib2==0.20.2 # Aligned with your list
+oauthlib==3.3.1 # Aligned with your list
+requests-oauthlib==2.0.0 # Aligned with your list
