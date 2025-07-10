@@ -31,15 +31,18 @@ const AuthContext = createContext<AuthContextType | undefined>(undefined)
 export function AuthProvider({ children }: { children: ReactNode }) {
   const [user, setUser] = useState<User | null>(null)
   const [isAuthenticated, setIsAuthenticated] = useState(false)
+  const [sessionId, setSessionId] = useState<string | null>(null)
 
   useEffect(() => {
     // Check for stored user data and token on app load
     const storedUser = localStorage.getItem('memora_user')
     const storedToken = localStorage.getItem('memora_token')
-    if (storedUser && storedToken) {
+    const storedSessionId = localStorage.getItem('memora_session_id')
+    if (storedUser && storedToken && storedSessionId) {
       const userData = JSON.parse(storedUser)
       setUser(userData)
       setIsAuthenticated(true)
+      setSessionId(storedSessionId)
     }
   }, [])
 
@@ -59,7 +62,6 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       }
 
       const data = await response.json()
-      
       const user: User = {
         id: data.user.id,
         fullName: data.user.full_name,
@@ -72,12 +74,12 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         conversationGoals: data.user.conversation_goals,
         additionalInfo: data.user.additional_info
       }
-      
       setUser(user)
       setIsAuthenticated(true)
       localStorage.setItem('memora_user', JSON.stringify(user))
       localStorage.setItem('memora_token', data.access_token)
       localStorage.setItem('memora_session_id', user.id)
+      setSessionId(user.id)
     } catch (error) {
       throw new Error(error instanceof Error ? error.message : 'Login failed')
     }
@@ -86,6 +88,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const logout = () => {
     setUser(null)
     setIsAuthenticated(false)
+    setSessionId(null)
     localStorage.removeItem('memora_user')
     localStorage.removeItem('memora_token')
     localStorage.removeItem('memora_session_id')
@@ -119,7 +122,6 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       }
 
       const data = await response.json()
-      
       const newUser: User = {
         id: data.user.id,
         fullName: data.user.full_name,
@@ -132,18 +134,19 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         conversationGoals: data.user.conversation_goals,
         additionalInfo: data.user.additional_info
       }
-      
       setUser(newUser)
       setIsAuthenticated(true)
       localStorage.setItem('memora_user', JSON.stringify(newUser))
       localStorage.setItem('memora_token', data.access_token)
+      localStorage.setItem('memora_session_id', newUser.id)
+      setSessionId(newUser.id)
     } catch (error) {
       throw new Error(error instanceof Error ? error.message : 'Signup failed')
     }
   }
 
   return (
-    <AuthContext.Provider value={{ user, isAuthenticated, login, logout, signup, sessionId: user ? user.id : null }}>
+    <AuthContext.Provider value={{ user, isAuthenticated, login, logout, signup, sessionId }}>
       {children}
     </AuthContext.Provider>
   )

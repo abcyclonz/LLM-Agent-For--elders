@@ -46,6 +46,7 @@ venv/
 .venv/
 env/
 .env/
+elderly-env/
 
 # Python generated files
 __pycache__/

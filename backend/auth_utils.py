@@ -47,9 +47,16 @@ def create_access_token(data: dict, expires_delta: Optional[timedelta] = None):
 def verify_token(token: str) -> Optional[dict]:
     """Verify and decode a JWT token"""
     try:
+        print(f"[DEBUG] verify_token: token={token}")
+        print(f"[DEBUG] verify_token: SECRET_KEY={SECRET_KEY}, ALGORITHM={ALGORITHM}")
         payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
+        print(f"[DEBUG] verify_token: decoded payload={payload}")
         return payload
-    except JWTError:
+    except JWTError as e:
+        print(f"[ERROR] verify_token: JWTError: {e}")
+        return None
+    except Exception as e:
+        print(f"[ERROR] verify_token: Exception: {e}")
         return None
 
 def generate_user_id() -> str:

@@ -115,6 +115,8 @@ export function SeniorChat() {
   const [healthLoading, setHealthLoading] = useState(false)
   const [healthError, setHealthError] = useState<string | null>(null)
 
+  const { userToken, userPersona, sessionId: agentSessionId } = agentState;
+
   // Audio feedback functions - Apple-like arpeggiated chimes, slightly lower pitch
   const playStartSound = () => {
     try {
@@ -289,6 +291,16 @@ export function SeniorChat() {
     setInput("")
     setIsLoading(true)
 
+    // --- PATCH: Always get latest sessionId and userToken from localStorage/AuthContext ---
+    const latestSessionId = sessionId || (typeof window !== 'undefined' ? localStorage.getItem('memora_session_id') : null)
+    const latestUserToken = typeof window !== 'undefined' ? localStorage.getItem('memora_token') : null
+    const patchedAgentState = {
+      ...agentState,
+      sessionId: latestSessionId,
+      userToken: latestUserToken
+    }
+    console.log("[DEBUG] Sending chat with agentState:", patchedAgentState)
+
     try {
       const response = await fetch('/api/chat', {
         method: 'POST',
@@ -297,7 +309,7 @@ export function SeniorChat() {
         },
         body: JSON.stringify({
           messages: [...messages.filter(msg => msg.id !== previewMessageId), userMessage],
-          agentState
+          agentState: patchedAgentState
         }),
       })
 
@@ -405,6 +417,16 @@ export function SeniorChat() {
       userToken: token
     }))
   }, [])
+
+  // Sync agentState.sessionId with AuthContext.sessionId
+  useEffect(() => {
+    if (sessionId) {
+      setAgentState(prev => ({
+        ...prev,
+        sessionId
+      }));
+    }
+  }, [sessionId]);
 
   // Voice recording functions
   const startRecording = async () => {
@@ -664,24 +686,20 @@ export function SeniorChat() {
 
   // Fetch user persona after login
   useEffect(() => {
-    const token = agentState.userToken;
-    if (token && !agentState.userPersona) {
-      // Try /auth/me endpoint (adjust if you use a different one)
-      fetch("/api/get-profile", {
-        headers: { Authorization: `Bearer ${token}` },
+    if (userToken && !userPersona && agentSessionId) {
+      fetch(`http://localhost:8000/get_profile/${agentSessionId}`, {
+        headers: { Authorization: `Bearer ${userToken}` },
       })
         .then((res) => res.json())
         .then((data) => {
-          // Adjust this if your backend returns a different structure
           const persona = data.user_persona || data;
           setAgentState((prev) => ({ ...prev, userPersona: persona }));
         })
         .catch((err) => {
-          // Optionally handle error
           setAgentState((prev) => ({ ...prev, userPersona: null }));
         });
     }
-  }, [agentState.userToken, agentState.userPersona]);
+  }, [userToken, userPersona, agentSessionId]);
 
   const closeSubTab = () => {
     setActiveSubTab(null)

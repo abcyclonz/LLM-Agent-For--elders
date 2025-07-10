@@ -1,5 +1,3 @@
-# main.py (FastAPI Application)
-#maingg
 from fastapi import FastAPI, HTTPException, UploadFile, File, Form, Response
 from pydantic import BaseModel
 import uvicorn
@@ -176,7 +174,8 @@ class AgentState(TypedDict):
     turn_count: int
     tool_result: Union[str, None]
     health_alerts: Union[List[str], None]
-    snoozed_alerts: List[str] 
+    snoozed_alerts: List[str]
+    user_id: Union[str, None]
 
 # --- Cached Resource Initializations ---
 router_llm: ChatOllama = None
@@ -432,14 +431,22 @@ def entry_node(state: AgentState) -> dict:
     print("\n--- Entry Node ---")
     new_turn_count = state.get('turn_count', 0) + 1
     print(f"  Turn count: {new_turn_count}")
-    return {"turn_count": new_turn_count, "retrieved_context": "", "tool_result": None}
+    # Copy the state and update only what you want to change
+    new_state = dict(state)
+    new_state["turn_count"] = new_turn_count
+    new_state["retrieved_context"] = ""
+    new_state["tool_result"] = None
+    new_state["user_id"] = state.get("user_id")
+    return new_state
 
 def fact_extraction_node(state: AgentState) -> dict:
     global fact_extractor_llm, embedding_model, facts_collection
     print("--- Fact Extraction Node ---")
     if not state["user_input"]:
         print("  No new user input to analyze for facts.")
-        return {}
+        new_state = dict(state)
+        new_state["user_id"] = state.get("user_id")
+        return new_state
     user_statement = state["user_input"]
     recent_history_str = format_messages_for_llm(state["messages"], max_history=6)
     prompt_template = ChatPromptTemplate.from_messages([
@@ -462,14 +469,19 @@ def fact_extraction_node(state: AgentState) -> dict:
     except Exception as e:
         print(f"  Error during fact extraction LLM call: {e}")
         extracted_fact = NO_FACT_TOKEN
-    updated_state_dict = {}
+    new_state = dict(state)
+    new_state["user_id"] = state.get("user_id")
     if extracted_fact != NO_FACT_TOKEN and extracted_fact:
         print(f"  Extracted fact: {extracted_fact}")
+        user_id = state.get("user_id")
+        if not user_id or user_id == "None":
+            print("ERROR: user_id is missing or None, cannot store fact!")
+            new_state["user_id"] = user_id
+            return new_state
         if facts_collection:
             try:
                 fact_id = str(uuid.uuid4())
                 fact_embedding = embedding_model.embed_documents([extracted_fact])[0]
-                user_id = state.get("user_id") or ""
                 facts_collection.add(
                     ids=[fact_id],
                     embeddings=[fact_embedding],
@@ -478,36 +490,35 @@ def fact_extraction_node(state: AgentState) -> dict:
                 )
                 print(f"  Fact added to ChromaDB (Collection: {FACTS_COLLECTION_NAME}) with ID: {fact_id}")
                 current_episodic_log = state.get("episodic_memory_session_log", [])
-                updated_state_dict["episodic_memory_session_log"] = current_episodic_log + [extracted_fact]
+                new_state["episodic_memory_session_log"] = current_episodic_log + [extracted_fact]
             except Exception as e:
                 print(f"  Error adding fact to ChromaDB: {e}")
         else:
             print("  ChromaDB facts_collection not available. Fact not persisted.")
     else:
         print("  No specific fact extracted.")
-    return updated_state_dict
+    new_state["user_id"] = state.get("user_id")
+    return new_state
 
 def assimilate_health_data_node(state: AgentState) -> dict:
     global facts_collection, embedding_model
+    new_state = dict(state)
+    new_state["user_id"] = state.get("user_id")
     health_alerts = state.get("health_alerts")
     if not health_alerts:
-        return {}
-
+        return new_state
     print("--- Assimilating Health Data into Memory ---")
     today_str = datetime.now().strftime("%Y-%m-%d")
     facts_to_add = []
-
     for alert in health_alerts:
         fact = f"Health fact recorded on {today_str}: {alert}"
         facts_to_add.append(fact)
         print(f"  Saving fact: {fact}")
-
     if facts_to_add and facts_collection:
         try:
             fact_ids = [str(uuid.uuid4()) for _ in facts_to_add]
             fact_embeddings = embedding_model.embed_documents(facts_to_add)
-
-            user_id = state.get("user_id") or ""
+            user_id = state.get("user_id")
             facts_collection.add(
                 ids=fact_ids,
                 embeddings=fact_embeddings,
@@ -516,16 +527,17 @@ def assimilate_health_data_node(state: AgentState) -> dict:
             )
             print(f"  Successfully added {len(facts_to_add)} health fact(s) to ChromaDB.")
             current_episodic_log = state.get("episodic_memory_session_log", [])
-            return {"episodic_memory_session_log": current_episodic_log + facts_to_add}
-
+            new_state["episodic_memory_session_log"] = current_episodic_log + facts_to_add
         except Exception as e:
             print(f"  Error adding health facts to ChromaDB: {e}")
-    return {}
+    new_state["user_id"] = state.get("user_id")
+    return new_state
 
 def router_node(state: AgentState) -> dict:
     global router_llm
     print("--- Router Node ---")
     user_input = state["user_input"]
+    
 
     prompt_template = ChatPromptTemplate.from_messages([
         ("system",
@@ -553,23 +565,30 @@ def router_node(state: AgentState) -> dict:
         decision = GENERATE_ACTION
 
     print(f"  Router decision: {decision}")
-    return {"router_decision": decision}
+    new_state = dict(state)
+    new_state["user_id"] = state.get("user_id")
+    new_state["router_decision"] = decision
+    return new_state
 
 def retrieve_memory_node(state: AgentState) -> dict:
     global embedding_model, facts_collection, summaries_collection, router_llm
     print("--- Retrieve Memory Node (RAG) ---")
+    new_state = dict(state)
+    new_state["user_id"] = state.get("user_id")
     if state.get("router_decision") != RETRIEVE_ACTION:
-        return {"retrieved_context": ""}
+        new_state["retrieved_context"] = ""
+        return new_state
 
     current_user_query = state["user_input"]
     if not current_user_query:
-        return {"retrieved_context": ""}
+        new_state["retrieved_context"] = ""
+        return new_state
 
     print("  >> Rewriting user query for better retrieval...")
     rewrite_prompt = ChatPromptTemplate.from_messages([
         ("system", "You are an expert at rewriting a user's question into a concise, keyword-focused search query for a vector database. "
-                   "Focus on the core nouns and topics. Do not answer the question, just provide the ideal search query. "
-                   "For example, if the user asks 'when was my meeting about electronics', the best query is 'user's meeting about electronics'."),
+                    "Focus on the core nouns and topics. Do not answer the question, just provide the ideal search query. "
+                    "For example, if the user asks 'when was my meeting about electronics', the best query is 'user's meeting about electronics'."),
         ("human", "Rewrite the following user question into a search query: '{question}'")
     ])
 
@@ -618,15 +637,19 @@ def retrieve_memory_node(state: AgentState) -> dict:
             
 
     except Exception as e:
-        return {"retrieved_context": f"Error retrieving memories: {e}"}
+        new_state["retrieved_context"] = f"Error retrieving memories: {e}"
+        return new_state
 
     context_str = "\n\n".join(retrieved_context_parts).strip()
     if not context_str:
         print("  No relevant dynamic memories retrieved from ChromaDB via RAG.")
-        return {"retrieved_context": ""}
+        new_state["retrieved_context"] = ""
+        return new_state
 
     print(f"  Retrieved RAG context (first 300 chars):\n{context_str[:300]}...")
-    return {"retrieved_context": context_str}
+    new_state["retrieved_context"] = context_str
+    new_state["user_id"] = state.get("user_id")
+    return new_state
 
 def calendar_tool_node(state: AgentState) -> dict:
     """Executes the calendar tool and puts the result in the state."""
@@ -794,17 +817,20 @@ def generate_response_node(state: AgentState) -> dict:
     updated_snooze_list = snoozed_alerts + newly_snoozed_keywords
     print(f"  Updating session snooze list to: {updated_snooze_list}")
     
-    return {
-        "messages": updated_messages, 
-        "user_input": "",
-        "snoozed_alerts": updated_snooze_list # Pass the updated list back into the state
-    }
+    new_state = dict(state)
+    new_state["messages"] = updated_messages
+    new_state["user_input"] = ""
+    new_state["snoozed_alerts"] = updated_snooze_list
+    new_state["user_id"] = state.get("user_id")
+    return new_state
 
 def check_and_summarize_node(state: AgentState) -> dict:
     global summarizer_llm, summaries_collection, embedding_model
     print("--- Check and Summarize Node ---")
     turn_count = state["turn_count"]
-    updated_state_dict = {}
+    new_state = dict(state)
+    new_state["user_id"] = state.get("user_id")
+    
     if turn_count > 0 and turn_count % SUMMARY_INTERVAL == 0:
         print(f"  Turn {turn_count}, triggering summarization.")
         num_messages_to_summarize = SUMMARY_INTERVAL * 2
@@ -812,14 +838,13 @@ def check_and_summarize_node(state: AgentState) -> dict:
         start_index_for_summary = max(0, len(messages_to_summarize_candidates) - num_messages_to_summarize)
         messages_to_summarize = messages_to_summarize_candidates[start_index_for_summary:]
         if not messages_to_summarize or len(messages_to_summarize) < 2:
-            print("  Not enough new messages to summarize meaningfully.")
-            return {}
+            return new_state
         conversation_str = format_messages_for_llm(messages_to_summarize, max_history=len(messages_to_summarize))
         prompt_template = ChatPromptTemplate.from_messages([
             ("system", "You are a summarization expert. Summarize the key topics, decisions, and important information "
-                       "exchanged in the following conversation segment. Focus on information that would be useful "
-                       "to recall in future, distinct conversations. Be concise and factual. Do not include conversational fluff. "
-                       "The summary should be self-contained and understandable without the original conversation."),
+                        "exchanged in the following conversation segment. Focus on information that would be useful "
+                        "to recall in future, distinct conversations. Be concise and factual. Do not include conversational fluff. "
+                        "The summary should be self-contained and understandable without the original conversation."),
             ("human", f"Conversation segment to summarize:\n{conversation_str}\n\nConcise Summary: ")
         ])
         try:
@@ -834,7 +859,7 @@ def check_and_summarize_node(state: AgentState) -> dict:
                 try:
                     summary_id = str(uuid.uuid4())
                     summary_embedding = embedding_model.embed_documents([summary])[0]
-                    user_id = state.get("user_id") or ""
+                    user_id = state.get("user_id")
                     summaries_collection.add(
                         ids=[summary_id],
                         embeddings=[summary_embedding],
@@ -843,7 +868,7 @@ def check_and_summarize_node(state: AgentState) -> dict:
                     )
                     print(f"  Summary added to ChromaDB (Collection: {SUMMARIES_COLLECTION_NAME}) with ID: {summary_id}")
                     current_ltm_log = state.get("long_term_memory_session_log", [])
-                    updated_state_dict["long_term_memory_session_log"] = current_ltm_log + [summary]
+                    new_state["long_term_memory_session_log"] = current_ltm_log + [summary]
                 except Exception as e:
                     print(f"  Error adding summary to ChromaDB: {e}")
             else:
@@ -852,7 +877,8 @@ def check_and_summarize_node(state: AgentState) -> dict:
             print("  Generated an empty or non-substantive summary.")
     else:
         print(f"  Turn {turn_count}, no summary needed yet (interval {SUMMARY_INTERVAL}).")
-    return updated_state_dict
+    new_state["user_id"] = state.get("user_id")
+    return new_state
 
 # --- LangGraph Graph Definition ---
 
@@ -940,8 +966,8 @@ async def chat_endpoint(request: ChatRequest, db: Session = Depends(get_db)):
     user_token = request.user_token
 
     user_id = None
-    # Get user persona from database if token is provided
     user_persona = user_persona_data  # Default fallback
+
     if user_token:
         try:
             payload = verify_token(user_token)
@@ -952,9 +978,12 @@ async def chat_endpoint(request: ChatRequest, db: Session = Depends(get_db)):
                     print(f"Loaded user persona for user {user_id}")
                 else:
                     print(f"Could not load user persona, using default")
+            else:
+                print(f"[WARNING] Token payload missing user_id: {payload}")
         except Exception as e:
             print(f"Error loading user persona: {e}")
 
+    # --- Always update session state with user_id if found from token ---
     if session_id not in session_states:
         session_states[session_id] = {
             "messages": [],
@@ -968,12 +997,18 @@ async def chat_endpoint(request: ChatRequest, db: Session = Depends(get_db)):
             "tool_result": None,
             "health_alerts": None,
             "user_id": user_id,
-            "snoozed_alerts": [] 
+            "snoozed_alerts": []  
         }
+    else:
+        # Always update user_id in session state if we have a new one (even if None, to avoid poisoning)
+        if user_id is not None:
+            session_states[session_id]["user_id"] = user_id
+        else:
+            print(f"[WARNING] user_id is missing in /chat endpoint for session {session_id}!")
 
     current_graph_input_state = session_states[session_id].copy()
     current_graph_input_state["user_input"] = user_input
-    current_graph_input_state["user_id"] = user_id
+    current_graph_input_state["user_id"] = session_states[session_id]["user_id"]
 
     print("--- Checking Health Data (Live from FastAPI endpoint) ---")
     live_health_alerts = check_health_data()
@@ -1016,7 +1051,7 @@ async def transcribe_audio_endpoint(audio_file: UploadFile = File(...)):
 # Optionally, you can deprecate or remove the /chat_voice endpoint:
 # @app.post("/chat_voice")
 # async def chat_voice_endpoint(...):
-#     raise HTTPException(status_code=410, detail="/chat_voice is deprecated. Use /transcribe_audio and /chat.")
+#       raise HTTPException(status_code=410, detail="/chat_voice is deprecated. Use /transcribe_audio and /chat.")
 
 @app.post("/speak_response")
 async def speak_response_endpoint(request: VoiceOutputRequest):
@@ -1040,7 +1075,12 @@ async def speak_response_endpoint(request: VoiceOutputRequest):
         raise e
     except Exception as e:
         print(f"Error during Kokoro TTS generation from endpoint: {e}")
-        raise HTTPException(status_code=500, detail=f"Speech generation failed: {e}. Check Kokoro TTS setup and voice name.")
+        # Add more specific error handling based on Kokoro common issues
+        if "espeak-ng" in str(e):
+            print("  Hint: Kokoro TTS relies on `espeak-ng`. Ensure it's installed as a system dependency (e.g., `sudo apt install espeak-ng`).")
+        if "voice" in str(e):
+            print("  Hint: The provided `voice_name` might be invalid. Check Kokoro documentation for available voices.")
+        raise HTTPException(status_code=500, detail=f"Speech generation failed: {e}. Check Kokoro TTS setup, voice name, and `espeak-ng` installation.")
 
 
 @app.post("/reset_session")
@@ -1181,6 +1221,22 @@ async def signup(request: UserSignupRequest, db: Session = Depends(get_db)):
             data={"sub": new_user.email, "user_id": new_user.id}
         )
         
+        if new_user.id not in session_states:
+            session_states[new_user.id] = {
+                "messages": [],
+                "long_term_memory_session_log": [],
+                "episodic_memory_session_log": [],
+                "user_persona": new_user.to_dict(),
+                "user_input": "",
+                "turn_count": 0,
+                "router_decision": "",
+                "retrieved_context": "",
+                "tool_result": None,
+                "health_alerts": None,
+                "user_id": new_user.id,
+                "snoozed_alerts": []
+            }
+
         return TokenResponse(
             access_token=access_token,
             token_type="bearer",
@@ -1278,8 +1334,8 @@ async def login(request: UserLoginRequest, db: Session = Depends(get_db)):
 
         # Initialize session_states for this user session (if not already present)
         session_id = str(user.id)  # Use user.id as session_id for login context
-        if session_id not in session_states:
-            session_states[session_id] = {
+        if user.id not in session_states:
+            session_states[user.id] = {
                 "messages": [],
                 "long_term_memory_session_log": [],
                 "episodic_memory_session_log": [],
@@ -1290,7 +1346,8 @@ async def login(request: UserLoginRequest, db: Session = Depends(get_db)):
                 "retrieved_context": "",
                 "tool_result": None,
                 "health_alerts": None,
-                "user_id": user.id
+                "user_id": user.id,
+                "snoozed_alerts": []
             }
 
         return TokenResponse(
