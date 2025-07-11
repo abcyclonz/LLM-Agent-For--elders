@@ -1,5 +1,29 @@
 # LLM-Agent-For-Elders
 
+
+The Project Goal:
+The primary goal of this project was to create more than just a chatbot. We set out to build a sophisticated, stateful AI Companion specifically designed for the needs of elderly users. This means the agent needed to be more than just conversational; it had to be a reliable assistant with three core pillars:
+Memory: The ability to remember details from past conversations, both specific facts and the general context.
+Action: The ability to perform real-world tasks on the user's behalf, such as scheduling events.
+Awareness: The ability to be proactively aware of the user's well-being through real-time data, like from a smartwatch.
+The Final Architecture: A Decoupled, Multi-Modal System
+To achieve this, we evolved the system from a simple script into a professional client-server architecture. This architecture is composed of two main parts:
+The Backend (The "Brain"): A high-performance Python application built with FastAPI. This is the core of the system. It handles all the complex AI logic, database interactions, and communication with external services.
+The Frontend (The "Face"): A modern web application (built with Node.js/Next.js) that provides the user interface. Its job is to capture user input (text or voice) and display the agent's responses in a friendly way.
+This decoupled design is a standard industry practice that allows for scalability, independent development of the UI and the AI logic, and a much more robust and maintainable final product.
+The Full User Interaction Loop (Speech-to-Speech):
+The complete system now supports a full voice-in, voice-out conversation:
+A user speaks into the frontend application.
+The frontend sends the raw audio to the backend's /transcribe_audio endpoint.
+The backend uses a local Whisper model to convert the speech into text.
+The frontend receives the transcribed text and sends it to the backend's main /chat endpoint.
+The backend's core AI agent processes this text, thinks, and generates a text response.
+The frontend receives the AI's text response and displays it in the chat window.
+Simultaneously, the frontend sends this AI text response to the backend's /speak_response endpoint.
+The backend uses the Kokoro TTS (Text-to-Speech) engine to convert the text into audio.
+The frontend receives the audio and plays it back to the user, completing the speech-to-speech loop.
+This architecture provides a seamless, natural, and multi-modal conversational experience.
+
 A project with a FastAPI backend and a Next.js (React) frontend to assist seniors with conversational AI, memory, and health monitoring.
 
 ---
